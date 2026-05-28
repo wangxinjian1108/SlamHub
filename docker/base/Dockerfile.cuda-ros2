@@ -1,0 +1,76 @@
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    CONDA_DIR=/opt/conda \
+    CONDA_ENV=slam_env \
+    ROS_DISTRO=humble
+
+WORKDIR /app
+
+# ROS2 Humble setup
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    software-properties-common \
+    curl \
+    gnupg \
+    lsb-release \
+    && add-apt-repository universe \
+    && curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key -o /usr/share/keyrings/ros-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] http://packages.ros.org/ros2/ubuntu $(. /etc/os-release && echo $UBUNTU_CODENAME) main" > /etc/apt/sources.list.d/ros2.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+    ros-${ROS_DISTRO}-desktop \
+    ros-${ROS_DISTRO}-pcl-ros \
+    ros-${ROS_DISTRO}-cv-bridge \
+    ros-${ROS_DISTRO}-image-transport \
+    ros-${ROS_DISTRO}-tf2-ros \
+    ros-${ROS_DISTRO}-nav2-msgs \
+    python3-colcon-common-extensions \
+    && rm -rf /var/lib/apt/lists/*
+
+# Common system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    zsh \
+    vim \
+    git-lfs \
+    wget \
+    unzip \
+    bzip2 \
+    ca-certificates \
+    openssh-server \
+    htop \
+    rsync \
+    cmake \
+    make \
+    build-essential \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libboost-all-dev \
+    libeigen3-dev \
+    libopencv-dev \
+    libpcl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Conda
+RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p ${CONDA_DIR} && \
+    rm /tmp/miniconda.sh && \
+    ${CONDA_DIR}/bin/conda init bash && \
+    ${CONDA_DIR}/bin/conda clean -afy
+
+ENV PATH=${CONDA_DIR}/bin:$PATH
+
+RUN conda create -n ${CONDA_ENV} python=3.10 -y && \
+    conda run -n ${CONDA_ENV} pip install --no-cache-dir \
+    numpy \
+    scipy \
+    opencv-python \
+    open3d \
+    torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+# Source ROS2 in bashrc
+RUN echo "source /opt/ros/${ROS_DISTRO}/setup.bash" >> /etc/bash.bashrc
+
+SHELL ["conda", "run", "-n", "slam_env", "/bin/bash", "-c"]

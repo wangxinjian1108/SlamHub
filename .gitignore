@@ -1,0 +1,26 @@
+*.pyc
+__pycache__/
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Conda
+.conda/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+config/token.yaml
+
+# Docker build context
+*.tar
+*.tar.gz

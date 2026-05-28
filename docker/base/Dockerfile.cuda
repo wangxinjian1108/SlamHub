@@ -1,0 +1,54 @@
+FROM nvidia/cuda:12.8.1-cudnn-devel-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    CONDA_DIR=/opt/conda \
+    CONDA_ENV=slam_env
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    zsh \
+    vim \
+    git-lfs \
+    wget \
+    unzip \
+    bzip2 \
+    ca-certificates \
+    openssh-server \
+    htop \
+    rsync \
+    curl \
+    cmake \
+    make \
+    build-essential \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libboost-all-dev \
+    libeigen3-dev \
+    libopencv-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN wget -q https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-x86_64.sh -O /tmp/miniconda.sh && \
+    bash /tmp/miniconda.sh -b -p ${CONDA_DIR} && \
+    rm /tmp/miniconda.sh && \
+    ${CONDA_DIR}/bin/conda init bash && \
+    ${CONDA_DIR}/bin/conda clean -afy
+
+ENV PATH=${CONDA_DIR}/bin:$PATH
+
+RUN conda create -n ${CONDA_ENV} python=3.10 -y && \
+    conda run -n ${CONDA_ENV} pip install --no-cache-dir \
+    numpy \
+    scipy \
+    opencv-python \
+    open3d \
+    torch torchvision --index-url https://download.pytorch.org/whl/cu128
+
+SHELL ["conda", "run", "-n", "slam_env", "/bin/bash", "-c"]

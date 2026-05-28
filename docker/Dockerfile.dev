@@ -1,0 +1,52 @@
+ARG BASE_IMAGE=runtime:latest
+FROM ${BASE_IMAGE}
+
+ARG S6_OVERLAY_VERSION=3.2.0.2
+ARG JUPYTER_PORT=8888
+ARG SSH_PORT=22
+ARG NB_USER=jovyan
+ARG NB_UID=1000
+ARG NB_GID=100
+ARG WORK_DIR=/home/${NB_USER}
+ARG ROOT_PASSWORD=ShARC
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    NB_USER=${NB_USER} \
+    NB_UID=${NB_UID} \
+    NB_GID=${NB_GID} \
+    HOME=${WORK_DIR} \
+    JUPYTER_PORT=${JUPYTER_PORT} \
+    SSH_PORT=${SSH_PORT} \
+    NB_PREFIX=/ \
+    SHELL=/bin/bash
+
+# s6-overlay
+ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-noarch.tar.xz /tmp
+ADD https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}/s6-overlay-x86_64.tar.xz /tmp
+RUN tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz && \
+    tar -C / -Jxpf /tmp/s6-overlay-x86_64.tar.xz && \
+    rm -f /tmp/s6-overlay-*.tar.xz
+
+# System packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    openssh-server \
+    sudo \
+    && rm -rf /var/lib/apt/lists/*
+
+# User setup
+RUN groupadd -g ${NB_GID} ${NB_USER} 2>/dev/null || true && \
+    useradd -m -s /bin/bash -N -u ${NB_UID} -g ${NB_GID} ${NB_USER} && \
+    echo "${NB_USER} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    echo "root:${ROOT_PASSWORD}" | chpasswd
+
+# JupyterLab
+RUN conda run -n slam_env pip install --no-cache-dir jupyterlab
+
+# SSH config
+RUN mkdir -p /run/sshd && \
+    sed -i 's/#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+
+EXPOSE ${JUPYTER_PORT} ${SSH_PORT}
+
+ENTRYPOINT ["/init"]
