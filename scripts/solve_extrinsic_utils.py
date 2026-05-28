@@ -29,12 +29,13 @@ def filter_outliers(transforms: list, threshold: float = 3.0) -> list:
     median_t = np.median(translations, axis=0)
 
     distances = np.linalg.norm(translations - median_t, axis=1)
+    mean_dist = np.mean(distances)
     std = np.std(distances)
 
     if std < 1e-10:
         return list(transforms)
 
-    mask = distances <= threshold * std
+    mask = np.abs(distances - mean_dist) <= threshold * std
     return [T for T, keep in zip(transforms, mask) if keep]
 
 

@@ -42,11 +42,14 @@ def parse_frame_transforms(filepath: Path) -> list:
             if not line or line.startswith("#"):
                 continue
             parts = line.split()
-            if len(parts) < 14:
+            if len(parts) >= 14:
+                # Format: frame_idx timestamp T00..T23 (14+ columns)
+                values = [float(x) for x in parts[2:14]]
+            elif len(parts) >= 13:
+                # Format: timestamp T00..T23 (13 columns)
+                values = [float(x) for x in parts[1:13]]
+            else:
                 continue
-            # Skip frame_idx and timestamp_ns (first 2 values)
-            values = [float(x) for x in parts[2:14]]
-            # Reshape 12 values into 3x4 matrix (row-major)
             mat34 = np.array(values).reshape(3, 4)
             T = np.eye(4)
             T[:3, :] = mat34

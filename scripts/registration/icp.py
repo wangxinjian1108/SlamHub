@@ -1,8 +1,8 @@
 import numpy as np
 import open3d as o3d
 
-from scripts.registration import register_method
-from scripts.registration.base import RegistrationBase, RegistrationResult
+from . import register_method
+from .base import RegistrationBase, RegistrationResult
 
 
 @register_method("icp")

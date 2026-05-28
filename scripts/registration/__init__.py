@@ -1,4 +1,4 @@
-from scripts.registration.base import RegistrationBase, RegistrationResult
+from .base import RegistrationBase, RegistrationResult
 
 _METHODS = {}
 
@@ -10,9 +10,13 @@ def register_method(name):
     return decorator
 
 
-def get_registration_method(name: str, **kwargs) -> RegistrationBase:
+def _ensure_methods_loaded():
     if not _METHODS:
-        import scripts.registration.icp  # noqa: F401
+        from . import icp  # noqa: F401
+
+
+def get_registration_method(name: str, **kwargs) -> RegistrationBase:
+    _ensure_methods_loaded()
     if name not in _METHODS:
         available = ", ".join(_METHODS.keys())
         raise ValueError(f"Unknown method '{name}'. Available: {available}")
