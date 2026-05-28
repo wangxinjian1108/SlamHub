@@ -1,0 +1,39 @@
+# FAST-LIO2 Configuration for Hesai AT128P + IMU
+# Vehicle: TEEMO AW7 (ZL11626)
+# Primary LiDAR: remote_front_left (Hesai AT128P)
+
+common:
+    lid_topic: "/points_raw"
+    imu_topic: "/imu/data"
+    time_sync_en: false
+
+preprocess:
+    lidar_type: 2                  # 1=Livox, 2=Velodyne/Ouster/Hesai (mechanical)
+    scan_line: 128                 # AT128P has 128 channels
+    scan_rate: 10                  # 10 Hz
+    blind: 0.5                     # Ignore points within 0.5m
+    point_filter_num: 4            # Keep every 4th point (~35K pts/frame after filter)
+    timestamp_unit: 3              # 0=sec, 1=ms, 2=us, 3=ns
+
+mapping:
+    acc_cov: 0.1
+    gyr_cov: 0.1
+    b_acc_cov: 0.0001
+    b_gyr_cov: 0.0001
+    fov_degree: 180
+    det_range: 150.0               # AT128P max range ~200m, use 150m
+    extrinsic_est_en: false        # Don't online-estimate extrinsic (we provide calibration)
+    extrinsic_T: [2.3506, 0.2487, 1.2815]    # LiDAR position in IMU frame [x, y, z] meters
+    extrinsic_R: [0.651421, -0.756903, 0.052425,
+                  0.753457,  0.653481, 0.072562,
+                 -0.089181, -0.007769, 0.995985]  # LiDAR rotation in IMU frame (row-major 3x3)
+
+publish:
+    path_en: true
+    scan_publish_en: true
+    dense_publish_en: true
+    scan_bodyframe_pub_en: true
+
+pcd_save:
+    pcd_save_en: true
+    interval: -1                   # -1 = save all frames; positive = save every N scans

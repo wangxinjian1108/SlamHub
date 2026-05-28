@@ -1,0 +1,40 @@
+# FAST-LIO2 Configuration for RoboSense RS-E1R + IMU
+# Vehicle: TEEMO AW7 (ZL11626)
+# LiDAR: flash_front (RoboSense RS-E1R)
+# Note: RS-E1R is a flash LiDAR with fewer points than AT128P
+
+common:
+    lid_topic: "/points_raw"
+    imu_topic: "/imu/data"
+    time_sync_en: false
+
+preprocess:
+    lidar_type: 2                  # Mechanical/solid-state
+    scan_line: 32                  # RS-E1R approximate scan lines
+    scan_rate: 10                  # 10 Hz
+    blind: 0.3                     # Ignore points within 0.3m
+    point_filter_num: 2            # Less aggressive filter (fewer points per frame)
+    timestamp_unit: 3              # nanoseconds
+
+mapping:
+    acc_cov: 0.1
+    gyr_cov: 0.1
+    b_acc_cov: 0.0001
+    b_gyr_cov: 0.0001
+    fov_degree: 120
+    det_range: 30.0                # RS-E1R shorter range (~30m)
+    extrinsic_est_en: false
+    extrinsic_T: [2.490944, -0.119223, 1.211697]    # LiDAR position in IMU frame
+    extrinsic_R: [ 0.770249,  0.004777, 0.637725,
+                  -0.007083,  0.999974, 0.001065,
+                  -0.637703, -0.005337, 0.770264]    # LiDAR rotation in IMU frame
+
+publish:
+    path_en: true
+    scan_publish_en: true
+    dense_publish_en: true
+    scan_bodyframe_pub_en: true
+
+pcd_save:
+    pcd_save_en: true
+    interval: -1
