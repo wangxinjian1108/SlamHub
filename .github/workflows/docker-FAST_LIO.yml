@@ -2,13 +2,13 @@ name: Docker – FAST_LIO
 
 on:
   push:
-    branches: [main]
+    branches: [main, master]
     tags: ["v*.*.*"]
     paths:
       - "docker/FAST_LIO/**"
       - ".github/workflows/docker-FAST_LIO.yml"
   pull_request:
-    branches: [main]
+    branches: [main, master]
     paths:
       - "docker/FAST_LIO/**"
       - ".github/workflows/docker-FAST_LIO.yml"
