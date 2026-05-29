@@ -38,7 +38,8 @@ RUN mkdir -p /catkin_ws/src && \
 
 RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     cd /catkin_ws && \
-    catkin_make -DCMAKE_BUILD_TYPE=Release -j\$(nproc) || true" && \
+    catkin_make --pkg fast_lio --make_args fast_lio_generate_messages -j\$(nproc) && \
+    catkin_make -DCMAKE_BUILD_TYPE=Release -j\$(nproc)" && \
     test -f /catkin_ws/devel/lib/fast_lio/fastlio_mapping && \
     echo "FAST-LIO2 built successfully"
 
