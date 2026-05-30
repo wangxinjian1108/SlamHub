@@ -1,25 +1,23 @@
 #!/usr/bin/env python3
-"""Compare FAST-LIO trajectory against LIDAR_TO_MAP reference.
+"""Compare FAST-LIO trajectory against LIDAR_TO_MAP reference, four ways.
 
-LIDAR_TO_MAP/<idx>_<ts_ns>.txt holds T_map_baselink (4x4) — the recording's
-own baselink pose in some absolute map frame (likely UTM-anchored).
+LIDAR_TO_MAP/<idx>_<ts_ns>.txt holds T_map_baselink (4x4) at the lidar frame
+timestamps. FAST-LIO trajectory.txt is T_world_imu; we compose
+T_world_baselink = T_world_imu @ T_imu_baselink with T_imu_baselink from
+application.yaml.
 
-FAST-LIO trajectory.txt is T_world_imu in a local map frame that starts near
-origin. To compare:
-1. Compose T_world_baselink = T_world_imu @ T_imu_baselink  (T_imu_baselink
-   from application.yaml: invert(baselink->imu))
-2. Match each LIDAR_TO_MAP entry to nearest trajectory pose by timestamp.
-3. Rigid SE(3) align the SLAM positions to the reference (Umeyama-style,
-   no scaling): solve R,t minimizing ||R @ p_slam + t - p_ref||.
-4. Report ATE (RMS translation error), per-axis bias/std, rotation angle
-   error mean/std, and plot top-down trajectories + error-vs-time.
+We evaluate four combinations:
+    1) NEAREST + GLOBAL    — original baseline
+    2) NEAREST + FIRSTFRAME — first matched pair forced to identity, then
+                              compare downstream drift
+    3) INTERP   + GLOBAL    — SLAM poses interpolated to reference timestamps
+                              (SLERP rotation, linear translation) before
+                              global SE(3) alignment
+    4) INTERP   + FIRSTFRAME
 
-Usage:
-    python3 scripts/compare_with_lidar_to_map.py \
-        --slam-trajectory output/ghcr_run_v3/trajectory.txt \
-        --reference-dir <recording>/LIDAR_TO_MAP \
-        --application-yaml <recording>/application.yaml \
-        --output-dir output/ghcr_run_v3
+Each variant reports ATE (RMS / mean / median / max), per-axis bias+std,
+and rotation angle error stats. A combined report YAML, comparison PNGs,
+and a printed table are produced.
 """
 import argparse
 import sys
@@ -33,9 +31,12 @@ import matplotlib.pyplot as plt
 sys.path.insert(0, str(Path(__file__).parent))
 from common.io import read_trajectory_tum
 from common.transform import (
-    euler_to_matrix, quaternion_to_matrix, make_homogeneous, invert_transform,
+    euler_to_matrix, quaternion_to_matrix, matrix_to_quaternion,
+    make_homogeneous, invert_transform,
 )
 
+
+# ---------- IO ----------
 
 def load_baselink_to_imu(application_yaml):
     cfg = yaml.safe_load(open(application_yaml))
@@ -48,19 +49,16 @@ def load_baselink_to_imu(application_yaml):
 
 
 def load_reference(ref_dir):
-    """Return ts_ns sorted array + list of 4x4 transforms."""
     files = sorted(ref_dir.glob("*.txt"))
     ts_list, T_list = [], []
     for f in files:
-        # Filename like 0000_000_1751437740202796064.txt
-        stem = f.stem
-        ts_ns = int(stem.split("_")[-1])
+        ts_ns = int(f.stem.split("_")[-1])
         T = np.loadtxt(f)
         if T.shape != (4, 4):
             continue
         ts_list.append(ts_ns)
         T_list.append(T)
-    return np.array(ts_list), T_list
+    return np.array(ts_list), np.array(T_list)
 
 
 def load_slam(traj_path, T_imu_baselink):
@@ -71,39 +69,115 @@ def load_slam(traj_path, T_imu_baselink):
         _, tx, ty, tz, qx, qy, qz, qw = r
         T_wi = make_homogeneous(quaternion_to_matrix(qx, qy, qz, qw),
                                  np.array([tx, ty, tz]))
-        # T_world_baselink = T_world_imu @ T_imu_baselink
         T_list.append(T_wi @ T_imu_baselink)
-    return ts, T_list
+    return ts, np.array(T_list)
 
 
-def match_by_timestamp(ts_ref, ts_slam, tol_ns=60_000_000):
-    """For each ref index, find nearest slam index within tol_ns."""
-    out = []  # (ref_idx, slam_idx)
+# ---------- Matching ----------
+
+def match_nearest(ts_ref, ts_slam, tol_ns):
+    """Per ref idx -> nearest slam idx within tol_ns."""
+    pairs = []
     for i, t in enumerate(ts_ref):
         j = int(np.argmin(np.abs(ts_slam - t)))
         if abs(int(ts_slam[j]) - int(t)) <= tol_ns:
-            out.append((i, j))
-    return out
+            pairs.append((i, j))
+    return pairs
 
+
+def slerp(q0, q1, u):
+    """Quaternion slerp; q* are (qx,qy,qz,qw)."""
+    if np.dot(q0, q1) < 0:
+        q1 = -q1
+    dot = float(np.clip(np.dot(q0, q1), -1.0, 1.0))
+    if dot > 0.9995:
+        q = q0 + u * (q1 - q0)
+        return q / np.linalg.norm(q)
+    th0 = np.arccos(dot); th = th0 * u
+    s = np.sin(th0)
+    a = np.sin(th0 - th) / s; b = np.sin(th) / s
+    return a * q0 + b * q1
+
+
+def interp_slam_to_ref(ts_ref, ts_slam, T_slam, max_gap_ns):
+    """For each ref ts, interpolate SLAM pose (SLERP rotation, linear translation).
+    Accept whenever the ref ts is bracketed by two SLAM samples whose gap is
+    ≤ max_gap_ns (typical sensor period × 2). Boundary refs that fall outside
+    the SLAM time range are dropped."""
+    N = len(ts_ref)
+    T_out = np.empty((N, 4, 4))
+    valid = np.zeros(N, dtype=bool)
+    for i, t in enumerate(ts_ref):
+        j = int(np.searchsorted(ts_slam, t))
+        if j <= 0 or j >= len(ts_slam):
+            continue
+        t0 = int(ts_slam[j - 1]); t1 = int(ts_slam[j])
+        if t1 - t0 > max_gap_ns or t1 == t0:
+            continue
+        u = (int(t) - t0) / (t1 - t0)
+        p = (1 - u) * T_slam[j - 1][:3, 3] + u * T_slam[j][:3, 3]
+        q0 = np.array(matrix_to_quaternion(T_slam[j - 1][:3, :3]))
+        q1 = np.array(matrix_to_quaternion(T_slam[j][:3, :3]))
+        q = slerp(q0, q1, u)
+        R = quaternion_to_matrix(*q)
+        T_out[i] = make_homogeneous(R, p)
+        valid[i] = True
+    return T_out, valid
+
+
+# ---------- Alignment ----------
 
 def rigid_align(P, Q):
-    """Find R, t such that R @ P + t ≈ Q. P, Q are (N, 3). Returns R(3,3), t(3,)."""
+    """R, t s.t. R @ P + t ≈ Q. P, Q (N, 3). Returns R (3,3), t (3,)."""
     Pc = P.mean(0); Qc = Q.mean(0)
-    Pp = P - Pc; Qp = Q - Qc
-    H = Pp.T @ Qp
-    U, S, Vt = np.linalg.svd(H)
-    d = np.linalg.det(Vt.T @ U.T)
-    D = np.diag([1, 1, 1 if d > 0 else -1])
+    H = (P - Pc).T @ (Q - Qc)
+    U, _, Vt = np.linalg.svd(H)
+    D = np.diag([1, 1, 1 if np.linalg.det(Vt.T @ U.T) > 0 else -1])
     R = Vt.T @ D @ U.T
-    t = Qc - R @ Pc
-    return R, t
+    return R, Qc - R @ Pc
+
+
+def first_frame_align(T_ref0, T_slam0):
+    """Find R, t such that R @ pos_slam[0] + t = pos_ref[0] AND
+    the SE(3) rotation aligns slam[0] to ref[0]."""
+    delta = T_ref0 @ invert_transform(T_slam0)  # (slam_frame -> ref_frame) for pose 0
+    return delta[:3, :3], delta[:3, 3]
+
+
+def apply_R_t(P, R, t):
+    return (R @ P.T).T + t
 
 
 def rot_angle_deg(R):
     cos_th = (np.trace(R) - 1) / 2.0
-    cos_th = np.clip(cos_th, -1.0, 1.0)
-    return np.degrees(np.arccos(cos_th))
+    return float(np.degrees(np.arccos(np.clip(cos_th, -1.0, 1.0))))
 
+
+# ---------- Evaluation ----------
+
+def evaluate(P_slam_aligned, P_ref, R_ref_list, R_slam_aligned_list):
+    err = P_slam_aligned - P_ref
+    err_norm = np.linalg.norm(err, axis=1)
+    rot_errs = []
+    for R_r, R_s in zip(R_ref_list, R_slam_aligned_list):
+        rot_errs.append(rot_angle_deg(R_r.T @ R_s))
+    rot_errs = np.array(rot_errs)
+    return dict(
+        n=len(err_norm),
+        ate_rms=float(np.sqrt((err_norm ** 2).mean())),
+        ate_mean=float(err_norm.mean()),
+        ate_median=float(np.median(err_norm)),
+        ate_max=float(err_norm.max()),
+        dx_mean=float(err[:, 0].mean()), dx_std=float(err[:, 0].std()),
+        dy_mean=float(err[:, 1].mean()), dy_std=float(err[:, 1].std()),
+        dz_mean=float(err[:, 2].mean()), dz_std=float(err[:, 2].std()),
+        rot_mean=float(rot_errs.mean()), rot_std=float(rot_errs.std()),
+        rot_median=float(np.median(rot_errs)), rot_max=float(rot_errs.max()),
+        err=err, err_norm=err_norm, rot_errs=rot_errs,
+    )
+
+
+# ---------- Driver ----------
 
 def main():
     p = argparse.ArgumentParser()
@@ -111,143 +185,162 @@ def main():
     p.add_argument("--reference-dir", type=Path, required=True)
     p.add_argument("--application-yaml", type=Path, required=True)
     p.add_argument("--output-dir", type=Path, required=True)
-    p.add_argument("--tol-ms", type=float, default=60.0,
-                   help="timestamp matching tolerance, ms")
+    p.add_argument("--tol-ms", type=float, default=60.0)
     args = p.parse_args()
 
     T_baselink_imu = load_baselink_to_imu(args.application_yaml)
     T_imu_baselink = invert_transform(T_baselink_imu)
 
     ts_ref, T_ref = load_reference(args.reference_dir)
-    print(f"Reference: {len(ts_ref)} poses, ts range "
-          f"{ts_ref[0]/1e9:.3f}..{ts_ref[-1]/1e9:.3f}")
     ts_slam, T_slam = load_slam(args.slam_trajectory, T_imu_baselink)
-    print(f"SLAM     : {len(ts_slam)} poses, ts range "
-          f"{ts_slam[0]/1e9:.3f}..{ts_slam[-1]/1e9:.3f}")
+    tol_ns = int(args.tol_ms * 1e6)
+    print(f"Ref poses: {len(ts_ref)}, SLAM poses: {len(ts_slam)}, tol ±{args.tol_ms}ms")
 
-    pairs = match_by_timestamp(ts_ref, ts_slam, int(args.tol_ms * 1e6))
-    print(f"Matched  : {len(pairs)} pairs within ±{args.tol_ms}ms")
-    if len(pairs) < 10:
-        print("Too few matches.")
-        sys.exit(1)
+    # ---- 4 variants ----
+    variants = {}
 
-    P_slam = np.array([T_slam[j][:3, 3] for _, j in pairs])
-    P_ref = np.array([T_ref[i][:3, 3] for i, _ in pairs])
-    R_align, t_align = rigid_align(P_slam, P_ref)
-    print(f"Alignment translation: {t_align}")
-    print(f"Alignment rotation angle: {rot_angle_deg(R_align):.4f}°")
+    # NEAREST
+    pairs = match_nearest(ts_ref, ts_slam, tol_ns)
+    if pairs:
+        ridx, sidx = zip(*pairs)
+        ridx = np.array(ridx); sidx = np.array(sidx)
+        T_slam_m = T_slam[sidx]
+        T_ref_m = T_ref[ridx]
+        ts_m = ts_ref[ridx]
 
-    # Transform SLAM trajectory into reference frame
-    P_slam_a = (R_align @ P_slam.T).T + t_align
-    err = P_slam_a - P_ref
-    err_norm = np.linalg.norm(err, axis=1)
-    ate_rms = float(np.sqrt((err_norm ** 2).mean()))
-    ate_mean = float(err_norm.mean())
-    ate_med = float(np.median(err_norm))
+        # global align
+        R, t = rigid_align(T_slam_m[:, :3, 3], T_ref_m[:, :3, 3])
+        P_slam_a = apply_R_t(T_slam_m[:, :3, 3], R, t)
+        R_slam_a = [R @ T_slam_m[i, :3, :3] for i in range(len(T_slam_m))]
+        v = evaluate(P_slam_a, T_ref_m[:, :3, 3],
+                     [T_ref_m[i, :3, :3] for i in range(len(T_ref_m))], R_slam_a)
+        v["align_R"], v["align_t"] = R, t
+        v["ts"] = ts_m
+        v["P_ref"] = T_ref_m[:, :3, 3]; v["P_slam_a"] = P_slam_a
+        variants["nearest_global"] = v
 
-    # Rotation errors
-    rot_errs = []
-    for (i, j) in pairs:
-        R_ref = T_ref[i][:3, :3]
-        R_slam = R_align @ T_slam[j][:3, :3]
-        R_delta = R_ref.T @ R_slam
-        rot_errs.append(rot_angle_deg(R_delta))
-    rot_errs = np.array(rot_errs)
+        # first-frame align
+        R, t = first_frame_align(T_ref_m[0], T_slam_m[0])
+        P_slam_a = apply_R_t(T_slam_m[:, :3, 3], R, t)
+        R_slam_a = [R @ T_slam_m[i, :3, :3] for i in range(len(T_slam_m))]
+        v = evaluate(P_slam_a, T_ref_m[:, :3, 3],
+                     [T_ref_m[i, :3, :3] for i in range(len(T_ref_m))], R_slam_a)
+        v["align_R"], v["align_t"] = R, t
+        v["ts"] = ts_m
+        v["P_ref"] = T_ref_m[:, :3, 3]; v["P_slam_a"] = P_slam_a
+        variants["nearest_firstframe"] = v
 
-    times = np.array([(ts_ref[i] - ts_ref[0]) / 1e9 for i, _ in pairs])
+    # INTERP — allow brackets up to 2x the nominal lidar period (100ms @ 10Hz)
+    T_slam_i, valid = interp_slam_to_ref(ts_ref, ts_slam, T_slam,
+                                          max_gap_ns=200_000_000)
+    if valid.any():
+        T_slam_m = T_slam_i[valid]
+        T_ref_m = T_ref[valid]
+        ts_m = ts_ref[valid]
 
-    print("\n=== Trajectory comparison ===")
-    print(f"  ATE RMS : {ate_rms:.4f} m")
-    print(f"  ATE mean: {ate_mean:.4f} m")
-    print(f"  ATE med : {ate_med:.4f} m")
-    print(f"  ATE max : {err_norm.max():.4f} m")
-    print(f"  per-axis bias (slam-ref, m): "
-          f"dx={err[:,0].mean():+.4f}±{err[:,0].std():.4f} "
-          f"dy={err[:,1].mean():+.4f}±{err[:,1].std():.4f} "
-          f"dz={err[:,2].mean():+.4f}±{err[:,2].std():.4f}")
-    print(f"  Rot err mean: {rot_errs.mean():.4f}° std {rot_errs.std():.4f}° "
-          f"med {np.median(rot_errs):.4f}° max {rot_errs.max():.4f}°")
+        R, t = rigid_align(T_slam_m[:, :3, 3], T_ref_m[:, :3, 3])
+        P_slam_a = apply_R_t(T_slam_m[:, :3, 3], R, t)
+        R_slam_a = [R @ T_slam_m[i, :3, :3] for i in range(len(T_slam_m))]
+        v = evaluate(P_slam_a, T_ref_m[:, :3, 3],
+                     [T_ref_m[i, :3, :3] for i in range(len(T_ref_m))], R_slam_a)
+        v["align_R"], v["align_t"] = R, t
+        v["ts"] = ts_m
+        v["P_ref"] = T_ref_m[:, :3, 3]; v["P_slam_a"] = P_slam_a
+        variants["interp_global"] = v
 
-    # ---- Plots ----
+        R, t = first_frame_align(T_ref_m[0], T_slam_m[0])
+        P_slam_a = apply_R_t(T_slam_m[:, :3, 3], R, t)
+        R_slam_a = [R @ T_slam_m[i, :3, :3] for i in range(len(T_slam_m))]
+        v = evaluate(P_slam_a, T_ref_m[:, :3, 3],
+                     [T_ref_m[i, :3, :3] for i in range(len(T_ref_m))], R_slam_a)
+        v["align_R"], v["align_t"] = R, t
+        v["ts"] = ts_m
+        v["P_ref"] = T_ref_m[:, :3, 3]; v["P_slam_a"] = P_slam_a
+        variants["interp_firstframe"] = v
+
+    # ---- Print table ----
+    cols = ["nearest_global", "interp_global", "nearest_firstframe", "interp_firstframe"]
+    headers = ["nearest+global", "interp+global", "nearest+first", "interp+first"]
+    print(f"\n{'metric':>22} | " + " | ".join(f"{h:>15}" for h in headers))
+    print("-" * 90)
+    rows = [
+        ("n_pairs", "n", "{}"),
+        ("ATE RMS (m)", "ate_rms", "{:.4f}"),
+        ("ATE mean (m)", "ate_mean", "{:.4f}"),
+        ("ATE median (m)", "ate_median", "{:.4f}"),
+        ("ATE max (m)", "ate_max", "{:.4f}"),
+        ("dx std (m)", "dx_std", "{:.4f}"),
+        ("dy std (m)", "dy_std", "{:.4f}"),
+        ("dz std (m)", "dz_std", "{:.4f}"),
+        ("dx bias (m)", "dx_mean", "{:+.4f}"),
+        ("dy bias (m)", "dy_mean", "{:+.4f}"),
+        ("dz bias (m)", "dz_mean", "{:+.4f}"),
+        ("rot mean (deg)", "rot_mean", "{:.4f}"),
+        ("rot max  (deg)", "rot_max", "{:.4f}"),
+    ]
+    for label, key, fmt in rows:
+        row = f"{label:>22} | "
+        for c in cols:
+            v = variants.get(c)
+            row += f"{fmt.format(v[key]) if v else '-':>15} | "
+        print(row.rstrip(" |"))
+
+    # ---- Save summary YAML ----
     out = args.output_dir
     out.mkdir(parents=True, exist_ok=True)
-
-    # Plot 1: top-down trajectories overlay (in REF frame)
-    fig, ax = plt.subplots(figsize=(12, 12))
-    ax.plot(P_ref[:, 0], P_ref[:, 1], "b-", lw=1.5, label="LIDAR_TO_MAP reference")
-    ax.plot(P_slam_a[:, 0], P_slam_a[:, 1], "r--", lw=1.5, label="FAST-LIO (aligned)")
-    ax.scatter([P_ref[0, 0]], [P_ref[0, 1]], c="lime", s=120, marker="o",
-               edgecolors="k", label="start", zorder=5)
-    ax.scatter([P_ref[-1, 0]], [P_ref[-1, 1]], c="orange", s=120, marker="*",
-               edgecolors="k", label="end", zorder=5)
-    ax.set_xlabel("X (m, reference frame)"); ax.set_ylabel("Y (m, reference frame)")
-    ax.set_aspect("equal"); ax.grid(alpha=0.3)
-    ax.set_title(f"Trajectory overlay — ATE RMS = {ate_rms:.3f} m  ({len(pairs)} matched poses)")
-    ax.legend()
-    fig.savefig(out / "compare_traj_topdown.png", dpi=130, bbox_inches="tight")
-    plt.close(fig)
-    print(f"\nSaved {out / 'compare_traj_topdown.png'}")
-
-    # Plot 2: error vs time
-    fig, axs = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
-    axs[0].plot(times, err_norm, "k-", lw=0.8)
-    axs[0].axhline(ate_rms, color="r", ls="--", lw=0.8, label=f"RMS={ate_rms:.3f}m")
-    axs[0].set_ylabel("‖Δpos‖ (m)"); axs[0].grid(alpha=0.3); axs[0].legend()
-    axs[1].plot(times, err[:, 0], label="dx")
-    axs[1].plot(times, err[:, 1], label="dy")
-    axs[1].plot(times, err[:, 2], label="dz")
-    axs[1].set_ylabel("axis error (m)"); axs[1].grid(alpha=0.3); axs[1].legend()
-    axs[2].plot(times, rot_errs, "k-", lw=0.8)
-    axs[2].set_ylabel("rotation angle err (°)"); axs[2].set_xlabel("time (s)")
-    axs[2].grid(alpha=0.3)
-    fig.suptitle("FAST-LIO vs LIDAR_TO_MAP — translation & rotation error over time")
-    fig.savefig(out / "compare_traj_error.png", dpi=130, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved {out / 'compare_traj_error.png'}")
-
-    # Plot 3: per-axis position vs time (overlay)
-    fig, axs = plt.subplots(3, 1, figsize=(12, 9), sharex=True)
-    for i, lbl in enumerate("XYZ"):
-        axs[i].plot(times, P_ref[:, i], "b-", lw=1.0, label="reference")
-        axs[i].plot(times, P_slam_a[:, i], "r--", lw=1.0, label="SLAM aligned")
-        axs[i].set_ylabel(f"{lbl} (m)"); axs[i].grid(alpha=0.3); axs[i].legend()
-    axs[2].set_xlabel("time (s)")
-    fig.suptitle("Position components: reference (blue) vs FAST-LIO aligned (red dashed)")
-    fig.savefig(out / "compare_traj_xyz.png", dpi=130, bbox_inches="tight")
-    plt.close(fig)
-    print(f"Saved {out / 'compare_traj_xyz.png'}")
-
-    # Save summary YAML
-    summary = {
-        "matched_pairs": len(pairs),
-        "tolerance_ms": float(args.tol_ms),
-        "alignment_translation_m": [float(x) for x in t_align],
-        "alignment_rotation_deg": float(rot_angle_deg(R_align)),
-        "ate_rms_m": ate_rms,
-        "ate_mean_m": ate_mean,
-        "ate_median_m": ate_med,
-        "ate_max_m": float(err_norm.max()),
-        "axis_bias_m": {
-            "dx": float(err[:, 0].mean()),
-            "dy": float(err[:, 1].mean()),
-            "dz": float(err[:, 2].mean()),
-        },
-        "axis_std_m": {
-            "dx": float(err[:, 0].std()),
-            "dy": float(err[:, 1].std()),
-            "dz": float(err[:, 2].std()),
-        },
-        "rotation_error_deg": {
-            "mean": float(rot_errs.mean()),
-            "std": float(rot_errs.std()),
-            "median": float(np.median(rot_errs)),
-            "max": float(rot_errs.max()),
-        },
-    }
-    yaml_out = out / "compare_traj_summary.yaml"
-    with open(yaml_out, "w") as f:
+    summary = {}
+    for c in cols:
+        v = variants.get(c)
+        if v is None: continue
+        summary[c] = {
+            "n_pairs": int(v["n"]),
+            "alignment_translation_m": [float(x) for x in v["align_t"]],
+            "alignment_rotation_deg": rot_angle_deg(v["align_R"]),
+            "ate_rms_m": v["ate_rms"], "ate_mean_m": v["ate_mean"],
+            "ate_median_m": v["ate_median"], "ate_max_m": v["ate_max"],
+            "axis_bias_m": dict(dx=v["dx_mean"], dy=v["dy_mean"], dz=v["dz_mean"]),
+            "axis_std_m":  dict(dx=v["dx_std"],  dy=v["dy_std"],  dz=v["dz_std"]),
+            "rotation_error_deg": dict(mean=v["rot_mean"], std=v["rot_std"],
+                                       median=v["rot_median"], max=v["rot_max"]),
+        }
+    with open(out / "compare_traj_summary.yaml", "w") as f:
         yaml.dump(summary, f, default_flow_style=None, sort_keys=False)
-    print(f"Saved {yaml_out}")
+    print(f"\nSaved {out / 'compare_traj_summary.yaml'}")
+
+    # ---- Plot: error vs time, 4 variants overlaid ----
+    fig, axs = plt.subplots(2, 1, figsize=(13, 8), sharex=True)
+    for c, h, color in zip(cols, headers,
+                           ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728"]):
+        v = variants.get(c)
+        if v is None: continue
+        t = (v["ts"] - v["ts"][0]) / 1e9
+        axs[0].plot(t, v["err_norm"], lw=1.0, label=h, color=color)
+        axs[1].plot(t, v["rot_errs"], lw=1.0, label=h, color=color)
+    axs[0].set_ylabel("‖Δpos‖ (m)"); axs[0].grid(alpha=0.3); axs[0].legend()
+    axs[1].set_ylabel("rotation err (°)"); axs[1].set_xlabel("time (s)")
+    axs[1].grid(alpha=0.3); axs[1].legend()
+    fig.suptitle("FAST-LIO vs LIDAR_TO_MAP error — 4 variants")
+    fig.savefig(out / "compare_traj_error_4way.png", dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {out / 'compare_traj_error_4way.png'}")
+
+    # ---- Plot: topdown overlay for each alignment ----
+    fig, axs = plt.subplots(1, 2, figsize=(20, 10))
+    for ax, key, h in [(axs[0], "interp_global", "Global SE(3) align (interp)"),
+                       (axs[1], "interp_firstframe", "First-frame align (interp)")]:
+        v = variants.get(key)
+        if v is None: continue
+        ax.plot(v["P_ref"][:, 0], v["P_ref"][:, 1], "b-", lw=1.5, label="reference")
+        ax.plot(v["P_slam_a"][:, 0], v["P_slam_a"][:, 1], "r--", lw=1.5, label="SLAM aligned")
+        ax.scatter([v["P_ref"][0, 0]], [v["P_ref"][0, 1]], c="lime", s=120,
+                   marker="o", edgecolors="k", zorder=5)
+        ax.scatter([v["P_ref"][-1, 0]], [v["P_ref"][-1, 1]], c="orange", s=120,
+                   marker="*", edgecolors="k", zorder=5)
+        ax.set_aspect("equal"); ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)")
+        ax.set_title(f"{h}\nATE RMS = {v['ate_rms']:.3f} m"); ax.legend(); ax.grid(alpha=0.3)
+    fig.savefig(out / "compare_traj_topdown_2way.png", dpi=130, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved {out / 'compare_traj_topdown_2way.png'}")
 
 
 if __name__ == "__main__":
