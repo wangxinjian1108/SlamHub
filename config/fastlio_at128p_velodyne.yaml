@@ -1,0 +1,36 @@
+common:
+    lid_topic:  "/velodyne_points"
+    imu_topic:  "/imu/data"
+    time_sync_en: false
+    time_offset_lidar_to_imu: 0.0
+
+preprocess:
+    lidar_type: 2                # Velodyne-style mechanical LiDAR (AT128P treated as such)
+    scan_line: 128               # AT128P has 128 channels
+    scan_rate: 10                # 10 Hz
+    timestamp_unit: 0            # per-point time field unit: 0-second (our converter writes seconds)
+    blind: 1.0
+
+mapping:
+    acc_cov: 0.1
+    gyr_cov: 0.1
+    b_acc_cov: 0.0001
+    b_gyr_cov: 0.0001
+    fov_degree:    180
+    det_range:     150.0
+    extrinsic_est_en:  false
+    # LiDAR pose in IMU frame (computed from vehicle calibration: remote_front_left -> GNSS_IMU)
+    extrinsic_T: [ 2.3506, 0.2487, 1.2815 ]
+    extrinsic_R: [ 0.651421, -0.756903,  0.052425,
+                   0.753457,  0.653481,  0.072562,
+                  -0.089181, -0.007769,  0.995985 ]
+
+publish:
+    path_en:  true
+    scan_publish_en:  true
+    dense_publish_en: true
+    scan_bodyframe_pub_en: true
+
+pcd_save:
+    pcd_save_en: true
+    interval: -1
