@@ -13,6 +13,7 @@ def register_method(name):
 def _ensure_methods_loaded():
     if not _METHODS:
         from . import icp  # noqa: F401
+        from . import icp_pl  # noqa: F401
 
 
 def get_registration_method(name: str, **kwargs) -> RegistrationBase:

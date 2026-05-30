@@ -163,14 +163,16 @@ def register_frame_mode(
 
     reg_method = get_registration_method(method_name)
     transforms_file = output_dir / "frame_transforms.txt"
+    quality_file = output_dir / "frame_quality.csv"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     fitness_values = []
     rmse_values = []
     t_start = time.time()
 
-    with open(transforms_file, "w") as f_out:
+    with open(transforms_file, "w") as f_out, open(quality_file, "w") as q_out:
         f_out.write("# timestamp T00 T01 T02 T03 T10 T11 T12 T13 T20 T21 T22 T23\n")
+        q_out.write("timestamp,fitness,inlier_rmse,num_inliers,num_source_pts\n")
 
         for i, pcd_file in enumerate(pcd_files):
             # Parse timestamp from filename (nanoseconds)
@@ -209,6 +211,9 @@ def register_frame_mode(
             row = [timestamp_ns] + T[:3, :4].flatten().tolist()
             f_out.write(" ".join(f"{v:.8f}" if idx > 0 else str(int(v))
                                  for idx, v in enumerate(row)) + "\n")
+            q_out.write(f"{timestamp_ns},{result.fitness:.6f},"
+                        f"{result.inlier_rmse:.6f},{result.num_inliers},"
+                        f"{len(sec_points)}\n")
 
             fitness_values.append(result.fitness)
             rmse_values.append(result.inlier_rmse)
