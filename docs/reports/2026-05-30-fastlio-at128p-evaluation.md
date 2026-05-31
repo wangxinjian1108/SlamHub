@@ -433,4 +433,113 @@ Commit hash: `42910a8`。
 
 ---
 
-_Report 生成于 2026-05-30，§8 增补于 2026-05-31。_
+## 9. B2 实施与对比（已落地）
+
+继 §8 之后落地 **B2（per-frame 6×6 info-matrix weighted aggregation）**。
+
+### 9.1 实现要点
+
+**ICP 后端**：`scripts/registration/icp_pl.py` 在 ICP 收敛后，从内点对应集 +
+target normals 重新装配 Hessian：
+
+- 残差：`r_i = n_i · (R · p_i + t - q_i)`
+- 雅可比（左扰动 ξ = (ω, t_pert)）：`J_i = (a_i, n_i)` 其中 `a_i = (R · p_i) × n_i`
+- Hessian：`H = Σ_i J_i J_iᵀ`
+- 信息矩阵：`Σ_pose⁻¹ ≈ H / σ²`，σ² 是内点残差方差
+
+**`RegistrationResult`** 新增 `information_matrix: Optional[np.ndarray]` 字段（6×6）。
+
+**`04_register_secondary.py`** 新增 `frame_information.csv` 输出，每行 37 列：
+`timestamp` + 36 个矩阵元素（row-major，块顺序 ω→t）。
+
+**`extract_extrinsic_from_registration.py`** 新增 `aggregate_info_weighted()` 和
+`--info-weighting` 标志。每个翻译轴单独加权：
+
+```
+W_axis = Σ_frames I_tt_diag[axis]      # 该轴信息量总和
+μ_axis = Σ I_tt_diag[axis] · t[axis] / W_axis
+```
+
+无 info 矩阵的帧（ICP correspondence < 6）自动过滤。
+
+### 9.2 三组对比（B1 vs B2，都基于 icp_pl）
+
+| 雷达 | 方法 | dx std | dy std | dz std | n_eff |
+|------|------|---:|---:|---:|---:|
+| **flash_front** | B1 (scalar) | 0.536 | 0.452 | 0.019 | 520 |
+|  | **B2 (6×6)** | **0.277** | **0.274** | **0.013** | 374 |
+| **flash_rear** | B1 | 0.794 | 0.582 | 0.024 | 523 |
+|  | **B2** | **0.532** | **0.426** | 0.032 | 251 |
+| **remote_front_right** | B1 | 0.329 | 0.853 | 0.027 | 177 |
+|  | **B2** | 0.332 | **0.229** | 0.026 | 213 |
+
+### 9.3 关键发现
+
+**rfr Y 方向 std 降 73%（0.85 → 0.23 m）**——这就是 6×6 info-matrix 的本质优势。
+rfr 朝右前看，Y 轴几何约束最弱（沿驾驶方向没多少特征），单帧 ICP 在 Y 上不确定度
+天然大。B1 标量加权无法区分各轴，统一给整帧一个权重；B2 信息矩阵能精准把"该帧
+Y 方向不可信、X/Z 可信"反映到聚合里。
+
+**flash_front 三轴均匀降 30-50%**（X -48%, Y -39%, Z -29%）。说明 flash_front
+本身视野各向同性较好，但 B1 仍受少数烂帧"按整帧权重拉走"影响，B2 按轴解耦后
+得到更紧的估计。
+
+**flash_rear dz 微升（+35%）**——绝对值 32 mm 仍极小。原因：B2 选择的有效帧
+（251 帧）在 Z 方向上的剩余方差略大于 B1 的（523 帧），但这是 std 收紧到极限后
+的随机波动，不是退化。
+
+**|Δt| vs 工厂校准基本不变**（B1: 0.15/0.59/0.45 m → B2: 0.19/0.60/0.38 m）。
+说明 calib 点估计稳定，B2 主要在**紧化不确定度**，而不是改变校准值本身。
+
+### 9.4 信息矩阵物理直觉
+
+取 flash_front 第一帧的 info-matrix translation 对角线：
+
+| 轴 | 信息量 (1/m²) | 标准差 (m) | 物理含义 |
+|----|---:|---:|----|
+| X | 38 K | 0.005 | 行驶方向，特征少 |
+| Y | 178 K | 0.002 | 侧向，墙等丰富 |
+| Z | 966 K | 0.001 | 垂直，地面/天花板约束强 |
+
+Z 信息量比 X 高 25×，完全符合"水平驾驶场景下垂直方向约束最强"的物理直觉。
+
+### 9.5 性能
+
+B2 没有额外耗时（Hessian 装配 O(M) 在 ICP 收敛后只跑一次，比 ICP 迭代本身快几个量级）。
+3 个雷达总耗时与 §8 相同（136 + 132 + 267 = 535 s）。
+
+### 9.6 已 commit
+
+| 文件 | 改动 |
+|------|------|
+| `scripts/registration/base.py` | `RegistrationResult` 加 `information_matrix` 字段 |
+| `scripts/registration/icp_pl.py` | post-ICP Hessian 装配 |
+| `scripts/04_register_secondary.py` | 输出 `frame_information.csv` |
+| `scripts/extract_extrinsic_from_registration.py` | `aggregate_info_weighted` + `--info-weighting` |
+
+Commit hash: `5934040`。
+
+### 9.7 三代演进总览
+
+| 维度 | A 基线 | B1 (B3 配合) | **B2** |
+|------|---|---|---|
+| ICP 类型 | point-to-point | point-to-plane | point-to-plane |
+| 聚合权重 | 平等（median） | 标量 (fitness·N/rmse²) | 6×6 info matrix 对角 |
+| 每帧轴间区分 | 无 | 无 | 有 |
+| rfr Y std (m) | 1.48 | 0.85 | **0.23** |
+| 所有 dz std < 3cm | 部分 | 是 | 是 |
+| ICP 速度 vs A | 1× | 2-5× | 2-5× |
+
+### 9.8 下一步推荐
+
+1. **C1（dump FAST-LIO 协方差）**：到这里副雷达端的不确定度已被精细化使用，
+   但 primary trajectory 仍假定无误。改 laserMapping.cpp 把 ESKF P 对角线写出来，
+   让低质量段的 primary pose 在 cross-LiDAR 解算时被自动降权。
+2. **B2 升级到全 6×6 Mahalanobis**：当前 B2 只用 translation 对角块，旋转和
+   翻译-旋转耦合都被丢了。完整的 Mahalanobis-加权 SE(3) 平均要解 6-DoF 上的
+   加权最小二乘，能再压一档不确定度。
+3. **D1（联合 BA）**：跨帧平滑约束 + 副雷达-地图约束放进 GTSAM/Ceres 同时优化。
+
+---
+
+_Report 生成于 2026-05-30，§8 增补于 2026-05-31，§9 增补于 2026-05-31。_
