@@ -775,4 +775,123 @@ C1 暂搁置，转入：
 
 ---
 
-_Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10/§11 增补于 2026-05-31。_
+## 12. 调 process_noise 救不了 C1（结构性问题）
+
+按 §11.9 推荐 1 试调 FAST-LIO `process_noise_cov`，看能否让 ESKF cov 变得对
+per-frame 加权有用。**结论：调不动**。
+
+### 12.1 实验设置
+
+`config/fastlio_at128p_velodyne.yaml` 的 4 个 noise 参数同步乘 10×、100×、1000×：
+
+```yaml
+mapping:
+    acc_cov: 0.1   →   1.0   →  10.0   →  100.0
+    gyr_cov: 0.1   →   1.0   →  10.0   →  100.0
+    b_acc_cov: 0.0001  →  0.001  →  0.01  →  0.1
+    b_gyr_cov: 0.0001  →  0.001  →  0.01  →  0.1
+```
+
+容器内逐个跑 SLAM，每次约 5 min。
+
+### 12.2 结果：cov 几乎不动，SLAM 质量恶化
+
+| Scale | pos_var_y mean (m²) | 跨帧动态范围 | Z 最大 (m) | 评价 |
+|-------|---:|---:|---:|---|
+| **1×** (baseline) | 3.17 × 10⁻⁶ | 2× | 6.69 | OK |
+| 10× | 4.16 × 10⁻⁶ | 3× | 7.55 | 微变化 |
+| 100× | 4.81 × 10⁻⁶ | 3.5× | 7.71 | 接近饱和 |
+| 1000× | 5.04 × 10⁻⁶ | 3.5× | 7.71 | 完全饱和 |
+
+三个关键观察：
+
+1. **process noise 调 1000× 只让 cov 平均涨 60%**：均值 3.17 → 5.04 × 10⁻⁶。
+   远小于"真实漂移 1.27 m → cov 应该是 1.6 × 10⁻¹"那一档要求。
+2. **跨帧动态范围始终 2-3.5×**：100× 和 1000× 的动态范围完全相同。说明
+   process noise 增长被测量更新"吃掉了"，没传到帧间方差差异上。
+3. **Z 漂移反而恶化**（6.69 → 7.71 m）：噪声太大滤波器轻信 IMU 积分，
+   SLAM 局部精度下降。process noise 调大有副作用。
+
+`rot_var` 在所有 scale 下都被 `%lf` 截成 0——无信号。
+
+### 12.3 根因（结构性）
+
+IKFoM (iterated extended Kalman filter on manifold) 是 FAST-LIO 后端。
+迭代更新步：
+
+```
+for k = 1 .. K:
+    H_k = jacobian at x_k
+    K_k = P_k H_kᵀ (H_k P_k H_kᵀ + R)⁻¹
+    x_{k+1} = x_k + K_k (residual)
+    P_{k+1} = (I - K_k H_k) P_k                ← 这一步收紧 cov
+```
+
+每次迭代把后验 cov 收敛到由**测量雅可比和测量噪声 R 决定的下界**
+（信息矩阵下界 `H R⁻¹ H`）。process noise 只影响**预测阶段**给 P_pred 多大空间，
+但更新阶段把 P_pred 一直收回到这个测量驱动下界。
+
+实测体现：
+
+```
+process_noise 100× → P_pred 涨 ~100×
+                  → 迭代 K_max=3 步后 P_post 几乎被打回原值
+```
+
+这是一个**良好调参 ESKF 的正常行为**——不是 FAST-LIO 的 bug，是滤波器形式
+本身的限制。对**实时定位**来说，这是一种特性（cov 反映"假设测量足够"下的
+理论极限）；对我们想用来做"哪帧滤波器自己也没把握"的诊断信号，**不可用**。
+
+### 12.4 那这条路就走死了？
+
+不全是。仍有几条候选：
+
+1. **C0：直接补充 `LASER_POINT_COV`**（lasermapping.cpp 顶部的常数）。
+   现在是 `0.001`，把测量噪声 R 放大 100× 等同于直接抬高 cov 下界。但和
+   `process_noise` 一样会牺牲 SLAM 精度，且作用不局部（影响每一帧）。
+2. **C2：用 cov 形状而不是 magnitude**。当前 pos_var 是
+   `var_y ≈ 2-3 × var_z`（车横向比纵向不可靠），这个 ratio 物理上对应
+   "Y 几何约束弱"——是有意义的信号。能拿这个做**轴间相对加权**而不是
+   全局乘数。
+3. **C3：从迭代次数 / 残差 / 匹配数推 per-frame quality**。FAST-LIO 内部有
+   每帧 ICP 残差范数、点云匹配数。这些直接反映"该帧 LiDAR 对滤波贡献多大"，
+   远比 cov 有信号。需要再加一个 dump。
+4. **C4：empirical cov 校正**。用 §2 ATE + RPE 的实测，反推 process_noise
+   / LASER_POINT_COV 应该乘多少，让 cov 数值上和真实匹配。这是
+   "post-hoc covariance calibration" 的经典做法。
+5. **D1：换 SLAM 后端做联合 BA**（GTSAM pose graph）。BA 后端的边权可以直接
+   从 cross-frame consistency 学，跳过滤波器 cov 整个问题。
+
+### 12.5 取舍
+
+C0 / C2 / C3 都还能试，但收益预计有限（最多压 std 10-20%）。本数据集 B2 已经
+在 σ_t < 5 cm 量级，再压收益不明显。
+
+更有价值的方向是 **D1（联合 BA）**——它一次性解决：
+- 跨帧不一致问题（B2 还没解决的）
+- ICP per-frame 偏置问题（B2-MH 失败的）
+- SLAM cov 不可用问题（C1 失败的）
+
+### 12.6 已 commit
+
+| 文件 | 改动 |
+|------|------|
+| `output/noise_sweep/x{10,100,1000}/` | 临时输出，仅用于本节统计 |
+| 没有代码改动（config.yaml 来回改后已还原） | — |
+
+### 12.7 路线图最终更新
+
+| Track | 状态 | 备注 |
+|-------|------|------|
+| A 基线（icp + median） | ✅ baseline | dx_std 0.5 m |
+| B1（fitness 加权） | ✅ landed | rfr Y std 1.5 → 0.85 m |
+| B3（point-to-plane ICP） | ✅ landed | 2-5× 提速 |
+| B2（axis info 加权） | ✅ landed | rfr Y std → 0.23 m |
+| B2-MH（full 6×6 Mahalanobis） | ❌ 留 flag | per-frame ICP 偏置，rfr Y 反弹到 0.75 |
+| C1（FAST-LIO cov dump） | ❌ 基础设施完整，信号不可用 | ESKF 过度自信 |
+| C1.5（调 process_noise） | ❌ 无效 | IKFoM 结构特性 |
+| **D1（联合 BA）** | 🎯 **next** | 唯一仍有 upside 的方向 |
+
+---
+
+_Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10/§11/§12 增补于 2026-05-31。_
