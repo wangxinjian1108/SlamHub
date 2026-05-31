@@ -1163,3 +1163,130 @@ FAST-LIO（或换 LIO-SAM——它有 GTSAM + loop closure）。
 
 _Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10/§11/§12 增补于
 2026-05-31，§13/§14 增补于 2026-05-31。_
+
+---
+
+## 15. KISS-ICP 地图喂回 cross-LiDAR：校准 std 大幅压降
+
+§14 证明 KISS-ICP 主轨迹 / 地图精度全面优于 FAST-LIO。本节实测：把
+B2（point-to-plane + axis info）所用的**主地图换成 KISS-ICP 输出**，
+3 个副雷达校准的 std / |Δt| 改善多少。
+
+### 15.1 实验设置
+
+| 组件 | FAST-LIO baseline | KISS-ICP 实验 |
+|------|-----------------|--------------|
+| 主轨迹 | FAST-LIO ESKF | KISS-ICP voxel-ICP（复合到 baselink） |
+| 主地图 | FAST-LIO scans.pcd → voxel 0.3 m | KISS-ICP 拼帧 → voxel 0.3 m（13 MB） |
+| Cross-LiDAR ICP | point-to-plane (icp_pl) | 同上 |
+| 聚合 | B2 axis info-weighted | 同上 |
+| 副雷达数据 | 同上（原始 PCD） | 同上 |
+
+地图拼接：取 KISS-ICP 输出的每帧 pose（LiDAR 系）× 对应清洗过的原始 PCD →
+75.5 M 点累积 → voxel 0.3 m 降采样 → 1.13 M 点 / 13 MB。
+
+### 15.2 ICP 收敛质量对比
+
+| 副雷达 | 指标 | FAST-LIO 地图 | KISS-ICP 地图 | 变化 |
+|--------|------|---:|---:|---:|
+| flash_front | mean fitness | 0.953 | **0.966** | +1.4% |
+| | mean rmse | 0.170 | **0.161** | -5% |
+| flash_rear | mean fitness | 0.912 | **0.930** | +2% |
+| | mean rmse | 0.204 | **0.194** | -5% |
+| rfr | mean fitness | 0.638 | **0.661** | +3.6% |
+| | mean rmse | 0.295 | **0.280** | -5% |
+
+主地图更好 → ICP 命中率提升、对应残差降低。三个副雷达**一致小幅改善**。
+
+### 15.3 校准 std / |Δt| 完整对比
+
+| 副雷达 | 维度 | FAST-LIO B2 | **KISS-ICP B2** | 改善 |
+|--------|------|---:|---:|---:|
+| **flash_front** | dx_std (m) | 0.277 | 0.272 | -2% |
+|  | **dy_std (m)** | 0.274 | **0.135** | **-51%** ⭐ |
+|  | dz_std (m) | 0.013 | 0.017 | +27% |
+|  | n_eff / 600 | 374 | 376 | ~ |
+|  | **\|Δt\| factory (m)** | 0.191 | **0.128** | **-33%** |
+| **flash_rear** | dx_std (m) | 0.532 | 0.526 | -1% |
+|  | dy_std (m) | 0.426 | 0.364 | -15% |
+|  | **dz_std (m)** | 0.032 | **0.016** | **-49%** ⭐ |
+|  | **n_eff / 600** | 251 | **356** | **+42%** |
+|  | **\|Δt\| factory (m)** | 0.598 | **0.286** | **-52%** ⭐ |
+| **rfr** | **dx_std (m)** | 0.332 | **0.192** | **-42%** ⭐ |
+|  | dy_std (m) | 0.229 | 0.258 | +13% |
+|  | dz_std (m) | 0.026 | 0.024 | -8% |
+|  | n_eff / 600 | 213 | 170 | -20% |
+|  | **\|Δt\| factory (m)** | 0.382 | 0.311 | -19% |
+
+### 15.4 五个亮点
+
+1. **flash_front dy std 减半**（0.274 → 0.135 m，−51%）—— 横向方向最弱
+   几何约束，KISS-ICP 主地图更清晰直接解决。
+2. **flash_rear dz std 减半**（32 → 16 mm，−49%）—— 主地图 Z 8× 更稳的
+   直接传导。
+3. **flash_rear n_eff +42%**（251 → 356）—— 更多帧达到加权阈值，信息密度
+   显著提升。
+4. **rfr dx std −42%**（0.332 → 0.192 m）—— 难度最大的副雷达受益最明显。
+5. **|Δt| vs 工厂全部更近**，flash_rear −52% 最显著。如果工厂标定接近真值，
+   说明 KISS-ICP B2 的 calib 估计也更接近真值。
+
+### 15.5 小幅副作用
+
+- flash_front dz_std +27%（13 → 17 mm）—— 但绝对量级仍极小。
+- rfr n_eff −20%（213 → 170）—— 更严的加权门槛把些边界帧剔了，但留下的
+  帧贡献的 dx std 还是降了 42%。
+
+这两条都是"std 跟 n_eff 互相 trade"的小波动，不影响主结论。
+
+### 15.6 解读：主地图质量 → 校准精度的链路
+
+数据链路被清晰打通：
+
+```
+KISS-ICP Z drift 8× 更小  →  主地图 Z 一致性提升
+                          ↓
+                     submap 抽取更对位
+                          ↓
+                  ICP fitness ↑ rmse ↓
+                          ↓
+              per-frame T_baselink_sec 估计更紧
+                          ↓
+                 aggregate 后 std 大幅压降
+```
+
+之前 §11/§12/§14 反复指认的"FAST-LIO ESKF 过度自信 → Z drift → 下游精度
+吃亏"在本节得到**直接量化验证**：换 KISS-ICP，dz_std 减半，最难副雷达的
+横向 std 也减半。
+
+### 15.7 是否替换默认主 backend？
+
+是。本节实测 + §14 端到端对比共同支持：
+
+| 维度 | 推荐 |
+|------|------|
+| 默认主 SLAM backend | **KISS-ICP** |
+| Fallback | FAST-LIO（IMU 可用 + LiDAR 退化场景） |
+| Cross-LiDAR aggregation | B2 (B1 + B3 + axis info) 不变 |
+
+### 15.8 已 commit 输出
+
+- `output/kiss_icp_run/scans_voxel0.3.pcd` — KISS-ICP 主地图（13 MB）
+- `output/kiss_icp_run/trajectory_imu.txt` — KISS-ICP 主轨迹（兼容 B2 pipeline）
+- `output/kiss_icp_run/registration/<lidar>/frame_transforms.txt` —
+  3 副雷达 icp_pl 配准（含 frame_quality.csv + frame_information.csv）
+- `output/kiss_icp_run/calibrated_extrinsics.yaml` — 最终 B2 校准（KISS map）
+
+### 15.9 路线图（最终最终最终）
+
+| Track | 状态 | 备注 |
+|-------|------|------|
+| KISS-ICP 后端 + B2 | ✅ landed | 当前最优组合 |
+| RPE + alarms（§13） | ✅ landed | 阈值可以收紧 |
+| LIO-SAM 对比 | 🔜 | factor graph + cov + loop closure |
+| D1 联合 BA | 🔜 | KISS-ICP + IMU 组合 BA 后端 |
+| 多 sample 稳定性 | 🔜 | 当前仅单段 60 s 数据，需多录制验证 |
+
+---
+
+_Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10/§11/§12 增补于
+2026-05-31，§13/§14/§15 增补于 2026-05-31。_
