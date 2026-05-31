@@ -542,4 +542,120 @@ Commit hash: `5934040`。
 
 ---
 
-_Report 生成于 2026-05-30，§8 增补于 2026-05-31，§9 增补于 2026-05-31。_
+## 10. B2-MH（全 Mahalanobis 升级）：探索性失败记录
+
+实施了 §9.8 推荐 2（B2 升级到全 6×6 Mahalanobis Karcher mean on SE(3)）。
+**结论：理论上更优，实战中输给 B2**。诚实记录下来供后人参考。
+
+### 10.1 实现路径
+
+**第一版**：full 6×6 Mahalanobis Karcher mean
+
+数学上等价于解：
+
+```
+T̄ = argmin_T  Σ_i ξ_iᵀ Ω_i ξ_i   ,  ξ_i = Log(T_i · T̄⁻¹)
+δ = (Σ Ω_i)⁻¹ Σ Ω_i ξ_i
+T̄ ← Exp(δ) · T̄
+```
+
+实现 SE(3) Log/Exp（机器精度 1e-16 通过往返测试）+ Newton 迭代。结果惨败：
+
+| 雷达 | t [m] | n_eff | 备注 |
+|------|-------|------|------|
+| flash_front | [2.76, 0.26, 1.82] | 121/600 | 偏离 B2 ~28 cm |
+| flash_rear | [-0.86, 1.89, 1.43] | **16/600** | Y 偏离 1.9 m！ |
+| rfr | [2.42, -0.15, 1.61] | 97/600 | Z 偏离 24 cm |
+
+flash_rear 的 n_eff = 16/600 = 2.7% 是灾难性的：少数几帧的 info matrix
+（特别是 rotation 部分）暴大，主导了整个均值，把 calib 拉到 +1.9 m 的离谱位置。
+
+**第二版**：加 per-frame 归一化 + 5% 极端帧 trim
+
+每帧 `Ω_i ← Ω_i / trace(Ω_i)`，再 trim 前后 5% 帧。n_eff 修复到 ~90%，
+但结果反而更差（flash_front |Δt|=1.54 m，flash_rear |Δt|=1.15 m）。
+
+**第三版**：Schur complement，3×3 translation-only Mahalanobis
+
+```
+I_t_marg_i = I_tt_i - I_tr_i · I_rr_i⁻¹ · I_rt_i
+(Σ I_t_marg_i) t̄ = Σ I_t_marg_i · t_i
+```
+
+边缘化掉 rotation 影响后只对 translation 做 3×3 Mahalanobis。结果与 B2 接近，
+但仍未显著超越：
+
+| 雷达 | 方法 | dx_std | dy_std | dz_std | \|Δt\| (m) |
+|------|------|---:|---:|---:|---:|
+| flash_front | B2 (axis) | 0.277 | 0.274 | 0.013 | 0.191 |
+|  | **B2-MH (Schur)** | **0.232** | **0.264** | 0.019 | 0.248 |
+| flash_rear | **B2** | **0.532** | **0.426** | **0.032** | **0.598** |
+|  | B2-MH | 0.750 | 0.893 | 0.024 | 0.776 |
+| rfr | **B2** | **0.332** | **0.229** | **0.026** | **0.382** |
+|  | B2-MH | 0.399 | 0.745 | 0.046 | 0.477 |
+
+flash_front 略有改善（dx_std −16%），但 flash_rear 和 rfr 都比 B2 差，
+最重要的 rfr Y std 从 0.229 涨回 0.745 m。
+
+### 10.2 根因：per-frame ICP 估计是「有偏」的，不是 iid Gaussian
+
+Mahalanobis 数学上假设：
+
+- 每帧 `T_i` 是 ground truth `T̄_true` 加上零均值 Gaussian 噪声
+- 噪声协方差就是 ICP 收敛时的 Hessian 倒数 `Σ_i = Ω_i⁻¹`
+
+这两条前提在我们的设置里都不成立：
+
+1. **per-frame 偏置**：每帧 ICP 收敛位置取决于局部几何。一段路上有平整墙面的
+   帧会收敛到不同的位置（受墙面方向影响），跟有树有坡的帧不一样。这些不是
+   均值为 ground truth 的随机扰动，而是**系统性的几何偏置**。
+2. **info matrix ≠ 误差协方差**：Hessian 测的是"在当前几何下要把残差再降多少
+   需要 pose 变多少"，反映的是 ICP cost 的局部曲率。但 ICP cost 的极小值
+   未必等于真实 calib——曲率高 ≠ 偏置小。
+
+结果：当 Mahalanobis 看到一帧 info 暴大就给它高权重，但这帧可能在某个方向上
+**偏得很自信**（自信地偏了）。B2 的对角加权变成软投票，对偏置鲁棒。
+
+### 10.3 留作 flag，不替换默认
+
+- 默认仍是 B2（`--info-weighting`）
+- B2-MH 通过 `--mahalanobis` 开启，作为未来工作的 placeholder
+
+### 10.4 后续要做才能让 B2-MH 真的工作
+
+1. **debias per-frame ICP 估计**：用 RANSAC / 子集投票剔除几何上偏的帧
+2. **info matrix 重标定**：用 cross-frame variance 经验校准 `Σ_i`，把"自信但偏"
+   的帧权重压下来（hierarchical Bayesian / empirical Bayes）
+3. **robust Mahalanobis**：用 Huber/Cauchy loss 替代 quadratic
+4. **联合 BA（D1）**：把 cross-frame 约束放进同一个优化器，让 outlier 自然
+   被相邻帧"纠正"
+
+### 10.5 已 commit
+
+`6dfc03a`，包含：
+
+- `aggregate_mahalanobis_se3` (full 6×6, 含 per-frame normalize + trim)
+- `aggregate_mahalanobis_translation` (3×3 Schur 边缘化)
+- `_schur_translation_info` 辅助函数
+- SE(3) Log/Exp 工具函数
+- `--mahalanobis` flag
+- 修正 std_t 报告（原版报了 Cramér-Rao 均值标准差 ~0.0001 m，不可与 B1/B2 直接比较）
+
+### 10.6 三代演进总览（更新）
+
+| 维度 | A 基线 | B1+B3 | B2 (axis) | B2-MH (Schur) |
+|------|---|---|---|---|
+| ICP 类型 | point-to-point | point-to-plane | point-to-plane | point-to-plane |
+| 聚合权重 | median | 标量 fitness | 对角 6×6 info | 3×3 Schur Mahalanobis |
+| 数学严格度 | low | low | mid | **high** |
+| 实战 rfr Y std | 1.48 | 0.85 | **0.23** | 0.75 |
+| 抗偏置 | mid | mid | **high** | low |
+| 是否默认 | — | × | **✓** | flag |
+
+**重要教训：在样本有偏置的真实场景里，数学最优的 Mahalanobis 输给软投票的
+axis-diagonal**。要让 Mahalanobis 真的赢，先要把 per-frame ICP debias，或者
+把 cross-frame variance 喂回 info matrix 作经验校准。
+
+---
+
+_Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10 增补于 2026-05-31。_
