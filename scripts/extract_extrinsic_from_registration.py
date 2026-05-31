@@ -149,6 +149,57 @@ def load_frame_quality(quality_path):
     return out
 
 
+def load_frame_information(info_path):
+    """Return dict ts_ns -> 6×6 info matrix (block order: ω, t)."""
+    out = {}
+    if not info_path.exists():
+        return out
+    with open(info_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split()
+            if len(parts) < 37:
+                continue
+            ts = int(parts[0])
+            vals = np.array([float(x) for x in parts[1:37]]).reshape(6, 6)
+            out[ts] = vals
+    return out
+
+
+def aggregate_info_weighted(transforms, info_matrices):
+    """Per-frame translation info matrix gives a 3-vector weight = diag of
+    the translation block of each frame's info matrix (Σ_t⁻¹). Per-axis
+    weighted mean: μ_a = Σ_i w_{i,a} x_{i,a} / Σ_i w_{i,a}. Reports
+    per-axis effective n_eff."""
+    n = len(transforms)
+    if n == 0:
+        return np.eye(4), np.zeros(3), np.zeros(3)
+    P = np.array([T[:3, 3] for T in transforms])  # (N, 3)
+    W = np.array([np.diag(I[3:6, 3:6]) for I in info_matrices])  # (N, 3)
+    W = np.clip(W, 1e-12, None)
+    Wn = W / W.sum(axis=0, keepdims=True)
+    mean_t = (P * Wn).sum(axis=0)
+    var_t = ((P - mean_t) ** 2 * Wn).sum(axis=0)
+    std_t = np.sqrt(var_t)
+    n_eff = (W.sum(axis=0) ** 2) / (W ** 2).sum(axis=0)
+
+    # Rotation: scalar weight = sum of translation-info trace (proxy for
+    # frame quality). For full 6×6 Mahalanobis we'd need full LS on so(3),
+    # which is overkill for a per-frame aggregation here.
+    scalar_w = W.sum(axis=1)  # (N,)
+    scalar_w = scalar_w / scalar_w.sum()
+    qs = np.array([matrix_to_quaternion(T[:3, :3]) for T in transforms])
+    for i in range(1, len(qs)):
+        if np.dot(qs[i], qs[0]) < 0:
+            qs[i] = -qs[i]
+    mean_q = (qs * scalar_w[:, None]).sum(axis=0)
+    mean_q = mean_q / np.linalg.norm(mean_q)
+    R = quaternion_to_matrix(*mean_q)
+    return make_homogeneous(R, mean_t), std_t, n_eff
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--primary-trajectory", type=Path, required=True)
@@ -156,7 +207,11 @@ def main():
     p.add_argument("--initial-guess", type=Path, required=True)
     p.add_argument("--output", type=Path, required=True)
     p.add_argument("--no-weighting", action="store_true",
-                   help="Force median aggregation even when frame_quality.csv exists.")
+                   help="Force median aggregation (no quality or info weights).")
+    p.add_argument("--info-weighting", action="store_true",
+                   help="B2: use the per-frame 6×6 info matrix translation block "
+                        "for weighted aggregation (overrides --no-weighting and "
+                        "fitness/rmse scalar weights).")
     args = p.parse_args()
 
     poses = read_trajectory_tum(args.primary_trajectory)
@@ -185,9 +240,12 @@ def main():
         print(f"\n=== {name} ===")
         ts_list, T_world_sec_list = load_frame_transforms(ft_path)
         quality = {} if args.no_weighting else load_frame_quality(reg_subdir / "frame_quality.csv")
+        infos = load_frame_information(reg_subdir / "frame_information.csv") \
+            if args.info_weighting else {}
 
         extrinsics = []
         weights = []
+        info_list = []
         for ts_ns, T_ws in zip(ts_list, T_world_sec_list):
             idx = int(np.argmin(np.abs(pose_ts - ts_ns)))
             T_wi = pose_Ts[idx]
@@ -198,9 +256,20 @@ def main():
             if q is not None:
                 w = q["fitness"] * q["n_inliers"] / (q["rmse"] ** 2 + 1e-6)
                 weights.append(w)
+            info_list.append(infos.get(int(ts_ns)))
 
         T_unw, std_unw = aggregate_unweighted(extrinsics)
-        if quality and len(weights) == len(extrinsics):
+        # B2: keep only frames that have a valid info matrix; if at least
+        # 10 such frames exist, do info-weighted aggregation on that subset.
+        valid_pairs = [(T, I) for T, I in zip(extrinsics, info_list) if I is not None]
+        if args.info_weighting and len(valid_pairs) >= 10:
+            ex_v = [p[0] for p in valid_pairs]
+            in_v = [p[1] for p in valid_pairs]
+            T_calib, std_w, n_eff_axes = aggregate_info_weighted(ex_v, in_v)
+            n_eff = float(n_eff_axes.mean())
+            agg_method = (f"info-weighted (B2: 6×6 ICP info matrix, "
+                          f"using {len(valid_pairs)}/{len(extrinsics)} frames)")
+        elif quality and len(weights) == len(extrinsics):
             # B1: per-frame quality-weighted aggregation
             T_calib, std_w, n_eff = aggregate_weighted(extrinsics, weights)
             agg_method = "weighted (fitness * inliers / rmse^2)"

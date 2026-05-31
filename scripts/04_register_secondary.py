@@ -164,15 +164,23 @@ def register_frame_mode(
     reg_method = get_registration_method(method_name)
     transforms_file = output_dir / "frame_transforms.txt"
     quality_file = output_dir / "frame_quality.csv"
+    info_file = output_dir / "frame_information.csv"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     fitness_values = []
     rmse_values = []
     t_start = time.time()
 
-    with open(transforms_file, "w") as f_out, open(quality_file, "w") as q_out:
+    with open(transforms_file, "w") as f_out, \
+         open(quality_file, "w") as q_out, \
+         open(info_file, "w") as i_out:
         f_out.write("# timestamp T00 T01 T02 T03 T10 T11 T12 T13 T20 T21 T22 T23\n")
         q_out.write("timestamp,fitness,inlier_rmse,num_inliers,num_source_pts\n")
+        # 6×6 information matrix (row-major, 36 values) in SE(3) tangent space
+        # block order: (ω, t) — rotation first 3, translation last 3.
+        i_out.write("# timestamp " + " ".join(
+            f"I{r}{c}" for r in range(6) for c in range(6)
+        ) + "\n")
 
         for i, pcd_file in enumerate(pcd_files):
             # Parse timestamp from filename (nanoseconds)
@@ -214,6 +222,10 @@ def register_frame_mode(
             q_out.write(f"{timestamp_ns},{result.fitness:.6f},"
                         f"{result.inlier_rmse:.6f},{result.num_inliers},"
                         f"{len(sec_points)}\n")
+            if result.information_matrix is not None:
+                vals = " ".join(f"{v:.6e}" for v in
+                                np.asarray(result.information_matrix).flatten())
+                i_out.write(f"{timestamp_ns} {vals}\n")
 
             fitness_values.append(result.fitness)
             rmse_values.append(result.inlier_rmse)

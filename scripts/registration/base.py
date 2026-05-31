@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
 import numpy as np
 
@@ -12,6 +13,9 @@ class RegistrationResult:
     fitness: float  # overlap ratio [0, 1]
     inlier_rmse: float  # RMSE of inlier correspondences
     num_inliers: int  # number of inlier correspondences
+    # B2: optional 6×6 information matrix in the SE(3) tangent space
+    # (rotation block first 3, translation block last 3). Σ_pose ≈ I⁻¹.
+    information_matrix: Optional[np.ndarray] = None
 
 
 class RegistrationBase(ABC):
