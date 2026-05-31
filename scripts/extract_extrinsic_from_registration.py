@@ -200,6 +200,203 @@ def aggregate_info_weighted(transforms, info_matrices):
     return make_homogeneous(R, mean_t), std_t, n_eff
 
 
+# ---------- SE(3) Lie algebra utilities ----------
+
+def _skew(v):
+    return np.array([[0, -v[2], v[1]],
+                     [v[2], 0, -v[0]],
+                     [-v[1], v[0], 0]])
+
+
+def _vee(W):
+    return np.array([W[2, 1], W[0, 2], W[1, 0]])
+
+
+def se3_exp(xi):
+    """SE(3) exponential map. xi = (omega, rho) ∈ R^6, returns 4×4 T.
+    Block order: omega first 3 (rotation), rho last 3 (twist translation)."""
+    omega = xi[:3]
+    rho = xi[3:]
+    theta = float(np.linalg.norm(omega))
+    Wx = _skew(omega)
+    if theta < 1e-9:
+        R = np.eye(3) + Wx + 0.5 * Wx @ Wx
+        V = np.eye(3) + 0.5 * Wx + (1.0 / 6.0) * Wx @ Wx
+    else:
+        s = np.sin(theta); c = np.cos(theta)
+        R = np.eye(3) + (s / theta) * Wx + ((1 - c) / theta ** 2) * Wx @ Wx
+        V = np.eye(3) + ((1 - c) / theta ** 2) * Wx + \
+            ((theta - s) / theta ** 3) * Wx @ Wx
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = V @ rho
+    return T
+
+
+def se3_log(T):
+    """SE(3) logarithm map. T (4×4) → xi = (omega, rho) ∈ R^6."""
+    R = T[:3, :3]
+    t = T[:3, 3]
+    cos_th = (np.trace(R) - 1.0) / 2.0
+    cos_th = np.clip(cos_th, -1.0, 1.0)
+    theta = float(np.arccos(cos_th))
+    if theta < 1e-9:
+        omega = 0.5 * _vee(R - R.T)
+        Wx = _skew(omega)
+        V_inv = np.eye(3) - 0.5 * Wx + (1.0 / 12.0) * Wx @ Wx
+    else:
+        omega = (theta / (2.0 * np.sin(theta))) * _vee(R - R.T)
+        Wx = _skew(omega)
+        coef = (1.0 - theta * np.cos(theta / 2.0) / (2.0 * np.sin(theta / 2.0))) / theta ** 2
+        V_inv = np.eye(3) - 0.5 * Wx + coef * Wx @ Wx
+    rho = V_inv @ t
+    return np.concatenate([omega, rho])
+
+
+def _schur_translation_info(W, ridge=1e-9):
+    """Marginalize out the rotation block of a 6×6 info matrix to get the
+    effective 3×3 translation info. W is in (omega, t) ordering, so:
+        Ω = [[I_rr, I_rt],
+             [I_tr, I_tt]]
+    I_t_marg = I_tt - I_tr @ inv(I_rr) @ I_rt."""
+    I_rr = W[:3, :3] + ridge * np.eye(3)
+    I_rt = W[:3, 3:]
+    I_tr = W[3:, :3]
+    I_tt = W[3:, 3:]
+    return I_tt - I_tr @ np.linalg.solve(I_rr, I_rt)
+
+
+def aggregate_mahalanobis_translation(transforms, info_matrices, ridge=1e-9,
+                                       trim_quantile=0.0):
+    """B2-MH: full 3×3 Mahalanobis weighted mean on translation only, using
+    Schur-complement marginal translation info per frame.
+
+    Avoids the rotation-vs-translation unit/scale mismatch of the full 6×6.
+
+    Translations: solve (Σ I_t_i) t̄ = Σ I_t_i t_i.
+    Rotation: weighted quaternion mean with scalar w_i = trace(I_t_i).
+
+    Returns (T̄, std_t_samples, info_t_sum, n_kept). std_t_samples is the
+    weighted empirical std around the mean (comparable to B1/B2).
+    """
+    n = len(transforms)
+    if n == 0:
+        return np.eye(4), np.zeros(3), np.zeros((3, 3)), 0
+
+    I_t = np.array([_schur_translation_info(W, ridge) for W in info_matrices])
+    # Symmetrize and ridge for numerical stability
+    I_t = 0.5 * (I_t + I_t.transpose(0, 2, 1)) + ridge * np.eye(3)[None, :, :]
+
+    traces = np.array([np.trace(M) for M in I_t])
+    keep = np.ones(n, dtype=bool)
+    if trim_quantile > 0.0:
+        lo, hi = np.quantile(traces, [trim_quantile, 1 - trim_quantile])
+        keep = (traces >= lo) & (traces <= hi)
+    I_t = I_t[keep]
+    transforms_k = [transforms[i] for i in range(n) if keep[i]]
+    n_kept = int(keep.sum())
+
+    P = np.array([T[:3, 3] for T in transforms_k])  # (N, 3)
+    H = I_t.sum(axis=0)                              # (3, 3)
+    rhs = np.einsum("ijk,ik->j", I_t, P)
+    mean_t = np.linalg.solve(H, rhs)
+
+    # Weighted empirical std around mean_t (comparable to B1/B2 std)
+    w = traces[keep]
+    w = np.clip(w, 1e-12, None); w = w / w.sum()
+    diff = P - mean_t
+    var_t = (diff ** 2 * w[:, None]).sum(axis=0)
+    std_t = np.sqrt(var_t)
+
+    # Rotation: weighted quaternion mean
+    qs = np.array([matrix_to_quaternion(T[:3, :3]) for T in transforms_k])
+    for i in range(1, len(qs)):
+        if np.dot(qs[i], qs[0]) < 0:
+            qs[i] = -qs[i]
+    mean_q = (qs * w[:, None]).sum(axis=0)
+    mean_q = mean_q / np.linalg.norm(mean_q)
+    R = quaternion_to_matrix(*mean_q)
+    return make_homogeneous(R, mean_t), std_t, H, n_kept
+
+
+def aggregate_mahalanobis_se3(transforms, info_matrices, max_iter=20,
+                               tol=1e-8, ridge=1e-9, normalize_per_frame=True,
+                               trim_quantile=0.0):
+    """Iteratively solve weighted Karcher mean on SE(3) with per-frame 6×6
+    information matrices (full Mahalanobis):
+
+        T̄ = argmin  Σ_i  ξ_iᵀ Ω_i ξ_i   where ξ_i = Log(T_i · T̄⁻¹)
+
+    Newton-style updates: δ = (Σ Ω_i)⁻¹ Σ Ω_i ξ_i ; T̄ ← Exp(δ) · T̄.
+
+    Args:
+        normalize_per_frame: if True, rescale each Ω_i so that trace(Ω_i)=1
+            and then weight each frame by an outer scalar w_i ∝ 1 (uniform
+            over the kept frames). This avoids a few high-inlier frames
+            dominating the mean.
+        trim_quantile: drop the top `q` and bottom `q` of frames by trace(Ω_i)
+            to make the mean robust to extreme outliers.
+
+    Returns (T̄, std_samples, info_sum, n_iter, n_kept). std_samples is the
+    empirical weighted std of per-frame translations around the converged
+    mean — directly comparable to B1/B2 std numbers.
+    """
+    n = len(transforms)
+    if n == 0:
+        return np.eye(4), np.zeros(3), np.zeros((6, 6)), 0, 0
+
+    Omegas = np.stack(info_matrices, axis=0)  # (N, 6, 6)
+    Omegas = 0.5 * (Omegas + Omegas.transpose(0, 2, 1))
+
+    # Trim by trace if requested
+    traces = np.array([np.trace(W) for W in Omegas])
+    keep = np.ones(n, dtype=bool)
+    if trim_quantile > 0.0:
+        lo, hi = np.quantile(traces, [trim_quantile, 1 - trim_quantile])
+        keep = (traces >= lo) & (traces <= hi)
+    Omegas = Omegas[keep]
+    transforms_k = [transforms[i] for i in range(n) if keep[i]]
+    n_kept = int(keep.sum())
+
+    if normalize_per_frame:
+        tr = np.array([np.trace(W) for W in Omegas])
+        tr = np.clip(tr, 1e-12, None)
+        Omegas = Omegas / tr[:, None, None]
+    Omegas = Omegas + ridge * np.eye(6)[None, :, :]
+
+    # Initialize with unweighted mean (median translation + averaged quat)
+    T_bar, _ = aggregate_unweighted(list(transforms_k))
+
+    n_iter = 0
+    for it in range(max_iter):
+        n_iter = it + 1
+        T_bar_inv = invert_transform(T_bar)
+        xis = np.array([se3_log(T_i @ T_bar_inv) for T_i in transforms_k])
+
+        # Solve (Σ Ω_i) δ = Σ Ω_i ξ_i
+        H = Omegas.sum(axis=0)
+        b = np.einsum("ijk,ik->j", Omegas, xis)
+        try:
+            delta = np.linalg.solve(H, b)
+        except np.linalg.LinAlgError:
+            delta = np.linalg.pinv(H) @ b
+
+        T_bar = se3_exp(delta) @ T_bar
+        if np.linalg.norm(delta) < tol:
+            break
+
+    # Empirical weighted std of translations around T_bar — comparable to B1/B2.
+    P = np.array([T[:3, 3] for T in transforms_k])
+    w = np.array([np.trace(W[3:6, 3:6]) for W in Omegas])
+    w = np.clip(w, 1e-12, None); w = w / w.sum()
+    diff = P - T_bar[:3, 3]
+    var_t = (diff ** 2 * w[:, None]).sum(axis=0)
+    std_t = np.sqrt(var_t)
+
+    H = Omegas.sum(axis=0)
+    return T_bar, std_t, H, n_iter, n_kept
+
+
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--primary-trajectory", type=Path, required=True)
@@ -212,6 +409,11 @@ def main():
                    help="B2: use the per-frame 6×6 info matrix translation block "
                         "for weighted aggregation (overrides --no-weighting and "
                         "fitness/rmse scalar weights).")
+    p.add_argument("--mahalanobis", action="store_true",
+                   help="B2-MH: full 6×6 Mahalanobis Karcher mean on SE(3). "
+                        "Uses Lie-algebra Newton iteration with each frame's "
+                        "complete 6×6 info matrix (rotation, translation, and "
+                        "coupling terms). Overrides --info-weighting.")
     args = p.parse_args()
 
     poses = read_trajectory_tum(args.primary_trajectory)
@@ -240,8 +442,9 @@ def main():
         print(f"\n=== {name} ===")
         ts_list, T_world_sec_list = load_frame_transforms(ft_path)
         quality = {} if args.no_weighting else load_frame_quality(reg_subdir / "frame_quality.csv")
+        need_info = args.info_weighting or args.mahalanobis
         infos = load_frame_information(reg_subdir / "frame_information.csv") \
-            if args.info_weighting else {}
+            if need_info else {}
 
         extrinsics = []
         weights = []
@@ -262,12 +465,21 @@ def main():
         # B2: keep only frames that have a valid info matrix; if at least
         # 10 such frames exist, do info-weighted aggregation on that subset.
         valid_pairs = [(T, I) for T, I in zip(extrinsics, info_list) if I is not None]
-        if args.info_weighting and len(valid_pairs) >= 10:
+        if args.mahalanobis and len(valid_pairs) >= 10:
+            ex_v = [p[0] for p in valid_pairs]
+            in_v = [p[1] for p in valid_pairs]
+            T_calib, std_w, H_t, n_kept = aggregate_mahalanobis_translation(
+                ex_v, in_v, trim_quantile=0.05,
+            )
+            n_eff = float(n_kept)
+            agg_method = (f"Mahalanobis on translation w/ Schur complement "
+                          f"(B2-MH: 3×3 marginal info, {n_kept}/{len(extrinsics)} kept)")
+        elif args.info_weighting and len(valid_pairs) >= 10:
             ex_v = [p[0] for p in valid_pairs]
             in_v = [p[1] for p in valid_pairs]
             T_calib, std_w, n_eff_axes = aggregate_info_weighted(ex_v, in_v)
             n_eff = float(n_eff_axes.mean())
-            agg_method = (f"info-weighted (B2: 6×6 ICP info matrix, "
+            agg_method = (f"info-weighted (B2: 6×6 ICP info matrix diagonal, "
                           f"using {len(valid_pairs)}/{len(extrinsics)} frames)")
         elif quality and len(weights) == len(extrinsics):
             # B1: per-frame quality-weighted aggregation
