@@ -102,6 +102,16 @@ python "$SCRIPT_DIR/05_solve_extrinsic.py" \
     --output "$OUTPUT_DIR/calibration/extrinsics.yaml"
 echo ""
 
+# --- Step 06: Quality check (advisory) ---
+echo "=============================="
+echo " Step 06: Quality check"
+echo "=============================="
+# Don't fail the pipeline on quality warnings — just surface them.
+# Use --thresholds <file> to tighten in production.
+python "$SCRIPT_DIR/check_quality.py" --run-dir "$OUTPUT_DIR" || \
+    echo "  (quality check returned a FAIL — see above)"
+echo ""
+
 echo "=============================================="
 echo " Pipeline complete!"
 echo " Results in: $OUTPUT_DIR"

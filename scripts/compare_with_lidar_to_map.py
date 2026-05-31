@@ -177,6 +177,62 @@ def evaluate(P_slam_aligned, P_ref, R_ref_list, R_slam_aligned_list):
     )
 
 
+def compute_rpe(T_slam_list, T_ref_list, ts_list, delta_s):
+    """Relative Pose Error over time window delta_s seconds.
+
+    For each pose i, find the pose j with ts[j] ≈ ts[i] + delta_s. Compute:
+      E_ij = (T_ref_i⁻¹ T_ref_j)⁻¹ · (T_slam_i⁻¹ T_slam_j)
+    Return translation norm and rotation angle of E_ij across all i.
+
+    The alignment between SLAM and ref frames cancels out because we compare
+    *relative* poses — that's the whole point of RPE vs ATE.
+    """
+    n = len(ts_list)
+    if n < 2:
+        return dict(n_pairs=0)
+    ts_ns = np.asarray(ts_list, dtype=np.int64)
+    delta_ns = int(delta_s * 1e9)
+    target_ts = ts_ns + delta_ns
+
+    t_errs, r_errs = [], []
+    for i in range(n):
+        # Find index j whose ts is closest to ts_i + delta_s, and j > i
+        j_cand = int(np.searchsorted(ts_ns, target_ts[i]))
+        if j_cand >= n:
+            continue
+        # pick whichever of j_cand-1 or j_cand is closer
+        if j_cand > 0 and abs(int(ts_ns[j_cand - 1]) - int(target_ts[i])) < \
+                abs(int(ts_ns[j_cand]) - int(target_ts[i])):
+            j = j_cand - 1
+        else:
+            j = j_cand
+        if j <= i:
+            continue
+        # Require actual gap close to delta within 20% tolerance
+        actual_gap = ts_ns[j] - ts_ns[i]
+        if abs(actual_gap - delta_ns) > 0.2 * delta_ns:
+            continue
+
+        rel_ref = invert_transform(T_ref_list[i]) @ T_ref_list[j]
+        rel_slam = invert_transform(T_slam_list[i]) @ T_slam_list[j]
+        E = invert_transform(rel_ref) @ rel_slam
+        t_errs.append(float(np.linalg.norm(E[:3, 3])))
+        r_errs.append(rot_angle_deg(E[:3, :3]))
+
+    if not t_errs:
+        return dict(n_pairs=0)
+    t_arr = np.array(t_errs); r_arr = np.array(r_errs)
+    return dict(
+        n_pairs=len(t_errs),
+        trans_rms=float(np.sqrt((t_arr ** 2).mean())),
+        trans_mean=float(t_arr.mean()),
+        trans_median=float(np.median(t_arr)),
+        trans_max=float(t_arr.max()),
+        rot_mean_deg=float(r_arr.mean()),
+        rot_max_deg=float(r_arr.max()),
+    )
+
+
 # ---------- Driver ----------
 
 def main():
@@ -285,6 +341,33 @@ def main():
             row += f"{fmt.format(v[key]) if v else '-':>15} | "
         print(row.rstrip(" |"))
 
+    # ---- RPE (frame-pairwise relative pose error) ----
+    # RPE is independent of global alignment, so compute once using the
+    # nearest-matched pairs. Use original (un-aligned) SLAM and ref poses.
+    v_base = variants.get("nearest_global")
+    rpe_results = {}
+    if v_base is not None:
+        # We need un-aligned T_slam and T_ref for matched pairs
+        pairs = match_nearest(ts_ref, ts_slam, tol_ns)
+        ridx, sidx = zip(*pairs)
+        ridx = np.array(ridx); sidx = np.array(sidx)
+        T_slam_m_list = [T_slam[j] for j in sidx]
+        T_ref_m_list = [T_ref[i] for i in ridx]
+        ts_m_list = [int(ts_ref[i]) for i in ridx]
+        print("\n=== RPE (relative pose error) ===")
+        print(f"{'Δt (s)':>8} | {'n':>6} | {'trans RMS':>10} | "
+              f"{'trans max':>10} | {'rot mean (°)':>12}")
+        print("-" * 60)
+        for delta_s in [1.0, 5.0, 10.0, 30.0]:
+            r = compute_rpe(T_slam_m_list, T_ref_m_list, ts_m_list, delta_s)
+            if r.get("n_pairs", 0) == 0:
+                print(f"{delta_s:>8.1f} | {'-':>6} | {'-':>10} | {'-':>10} | {'-':>12}")
+                continue
+            print(f"{delta_s:>8.1f} | {r['n_pairs']:>6d} | "
+                  f"{r['trans_rms']:>10.4f} | {r['trans_max']:>10.4f} | "
+                  f"{r['rot_mean_deg']:>12.4f}")
+            rpe_results[f"window_{delta_s:.0f}s"] = r
+
     # ---- Save summary YAML ----
     out = args.output_dir
     out.mkdir(parents=True, exist_ok=True)
@@ -303,6 +386,8 @@ def main():
             "rotation_error_deg": dict(mean=v["rot_mean"], std=v["rot_std"],
                                        median=v["rot_median"], max=v["rot_max"]),
         }
+    if rpe_results:
+        summary["rpe"] = rpe_results
     with open(out / "compare_traj_summary.yaml", "w") as f:
         yaml.dump(summary, f, default_flow_style=None, sort_keys=False)
     print(f"\nSaved {out / 'compare_traj_summary.yaml'}")
