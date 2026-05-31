@@ -242,10 +242,17 @@ def main():
     p.add_argument("--application-yaml", type=Path, required=True)
     p.add_argument("--output-dir", type=Path, required=True)
     p.add_argument("--tol-ms", type=float, default=60.0)
+    p.add_argument("--slam-frame", choices=["imu", "baselink"], default="imu",
+                   help="What frame the SLAM trajectory expresses. 'imu' (default) "
+                        "composes T_imu_baselink from application.yaml. 'baselink' "
+                        "skips the composition (caller already provides baselink poses).")
     args = p.parse_args()
 
-    T_baselink_imu = load_baselink_to_imu(args.application_yaml)
-    T_imu_baselink = invert_transform(T_baselink_imu)
+    if args.slam_frame == "imu":
+        T_baselink_imu = load_baselink_to_imu(args.application_yaml)
+        T_imu_baselink = invert_transform(T_baselink_imu)
+    else:
+        T_imu_baselink = np.eye(4)  # SLAM already in baselink, no compose
 
     ts_ref, T_ref = load_reference(args.reference_dir)
     ts_slam, T_slam = load_slam(args.slam_trajectory, T_imu_baselink)

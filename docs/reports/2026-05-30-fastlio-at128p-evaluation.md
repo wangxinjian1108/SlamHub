@@ -1036,3 +1036,130 @@ Commit `4cb2ae0`。
 
 _Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10/§11/§12 增补于
 2026-05-31，§13 增补于 2026-05-31。_
+
+---
+
+## 14. 后端对比：FAST-LIO vs KISS-ICP
+
+§7 评估方法学里第 18 条"单一 SLAM 后端"指出 FAST-LIO 可能不是本数据集最优。
+本节实测 [KISS-ICP](https://github.com/PRBonn/kiss-icp)（PRBonn，2023）作为
+对比。KISS-ICP 是**纯 LiDAR**（不用 IMU）+ voxel ICP 的极简管线。
+
+### 14.1 实施
+
+```bash
+pip install kiss-icp                                # 一行装好
+# pre-clean NaN points (KISS-ICP silently exits on NaN PCD)
+python prep_nan_clean.py
+# run
+kiss_icp_pipeline /path/to/cleaned_pcds             # 23 秒跑完 600 帧
+```
+
+输出 `cleaned_pcds_poses_tum.txt`（TUM 格式，但 timestamp 用帧索引）。
+注入真实时间戳后跑 `compare_with_lidar_to_map.py`。
+
+**坐标系注意**：KISS-ICP 输出的是 `T_kissmap_lidar`（LIDAR 局部系），不是
+baselink 系。LiDAR→baselink 有 49° yaw 偏置；直接比 ATE 会出现 50° 旋转
+残差和 0.71 m ATE。需要先用 `T_lidar_baselink = inv(yaml extrinsic)` 复合
+出 `T_kissmap_baselink`，再比。`compare_with_lidar_to_map.py` 加了
+`--slam-frame baselink` 标志支持这种"已组合"输入。
+
+### 14.2 实测对比
+
+完整对比表（与 §13 相同 RPE 窗口）：
+
+| 指标 | FAST-LIO | **KISS-ICP** | KISS 优势 |
+|------|---:|---:|:---:|
+| 实施工作量 | Docker + ROS + CI build | `pip install` | 极简 |
+| 是否需要 IMU | 是 | **否** | — |
+| Wall-clock 跑 60 s 数据 | ≈ 60 s + ROS 开销 | **23 s** | **4×** |
+| 处理速率 | ~10 Hz | **44 Hz** | 4× |
+| **ATE RMS（global 对齐）** | 0.323 m | **0.149 m** | **2.2×** |
+| ATE max（global） | 0.746 m | 0.336 m | 2.2× |
+| **Z 漂移（首帧对齐 dz bias）** | **+1.265 m** | **+0.156 m** | **8×** ⭐ |
+| ATE RMS（首帧对齐） | 1.686 m | 0.568 m | 3× |
+| dz std（global） | 0.027 m | 0.032 m | 类似 |
+| Rot max（global） | 1.02° | 1.06° | 类似 |
+| RPE 1 s | 5.3 cm | 6.0 cm | 类似 |
+| RPE 5 s | 18.1 cm | 16.2 cm | 10% 优 |
+| RPE 10 s | 31.7 cm | 27.8 cm | 12% 优 |
+| RPE 30 s | 90.1 cm | 70.6 cm | 22% 优 |
+| 是否报 covariance | 是（不可信，§11） | 否 | — |
+
+### 14.3 关键发现
+
+**KISS-ICP 在本数据集上全面占优**——精度更高、漂移更小、跑得更快、依赖更少。
+最显眼的是 **Z drift 8× 改善**（1.27 m → 0.156 m）。这一点直接命中了
+§11/§12 反复出现的 ESKF 过度自信问题——纯 LiDAR pipeline 不用 IMU 积分，
+本质上没有 bias drift 累积，所以 Z 方向稳得多。
+
+### 14.4 为什么 KISS-ICP 这么好？
+
+1. **AT128P 128 线点云**几何信息极其丰富，单帧 ICP 就能可靠跟踪，IMU 先验
+   反而是"多余的不确定度来源"
+2. **voxel 表示 + 自适应阈值** 让 ICP 收敛快、稳
+3. **无累积 IMU bias**——FAST-LIO Z drift 的根本来源
+4. **更简单 = 更少错误来源**
+
+### 14.5 KISS-ICP 的弱点（不在本数据集体现）
+
+- **无 IMU 备份**：tunnel / 长直道 / featureless 场景 LiDAR 失效时没有支撑
+- **无 covariance 输出**：cross-LiDAR 加权聚合（§9 B2）走不通——只能用 ICP-side
+  info matrix（B2 仍可），但 SLAM-side 的可信度信号缺失
+- **无 loop closure / 重定位**：长序列累积漂移会一直涨，没有闭环修正
+- **不报偏置 / 速度**：下游需要 IMU 状态估计的应用（如 fusion / 控制）拿不到
+
+### 14.6 改用 KISS-ICP 后的下游影响
+
+如果切换到 KISS-ICP 作为主雷达 SLAM：
+
+| 下游模块 | 影响 |
+|---------|------|
+| Cross-LiDAR 配准（§3） | 主地图质量更好 → 副雷达 ICP fitness 应该提升 |
+| B1/B2 加权 | 不变 |
+| C1 / C1.5（SLAM cov） | 直接没了 → 不需要纠结 ESKF 过度自信 |
+| Quality alarms（§13） | RPE_10s 阈值可以收紧到 0.4 m（KISS 实测 0.28） |
+| Z drift 阈值（§13） | 2.0 → 0.5 m 可行 |
+| run_all.sh / Dockerfile | 大幅简化，不再需要 ROS Noetic |
+
+### 14.7 建议路径
+
+短期（1-2 天）：把 KISS-ICP 集成进 pipeline 作为**默认主雷达 SLAM**，FAST-LIO
+留作 fallback（IMU 可用且 LiDAR 退化场景）。改动：
+
+- `scripts/run_kiss_icp.py`：从 PCD 目录到 trajectory.txt 一站式
+- 修改 `04_register_secondary.py` 接受 KISS-ICP 输出地图（reconstruction 用
+  `cleaned_pcds_poses_kitti.txt` + 累积变换）
+- `run_all.sh` 加 `--backend {fast_lio, kiss_icp}` 开关
+
+中期：在没有 IMU / 短序列场景下默认 KISS-ICP；长序列 + IMU 可用场景默认
+FAST-LIO（或换 LIO-SAM——它有 GTSAM + loop closure）。
+
+### 14.8 已记录
+
+- `output/kiss_icp_run/trajectory.txt`（LiDAR frame）
+- `output/kiss_icp_run/trajectory_baselink.txt`（baselink frame，已组合）
+- `output/kiss_icp_run/compare_traj_summary.yaml`
+- `output/kiss_icp_run/compare_traj_*.png`
+
+代码改动：
+
+| 文件 | 改动 |
+|------|------|
+| `scripts/compare_with_lidar_to_map.py` | 加 `--slam-frame {imu,baselink}` |
+
+### 14.9 路线图最终最终更新
+
+| Track | 状态 | 备注 |
+|-------|------|------|
+| A 基线 → B2 → B2-MH | ✅ / ❌ | 见 §8/9/10 |
+| C1 / C1.5 | ❌ ESKF 过度自信 | §11/12 |
+| RPE + alarms | ✅ landed | §13 |
+| **KISS-ICP 后端** | 🎯 **强推默认** | 2-8× 全面优于 FAST-LIO |
+| LIO-SAM 对比 | 🔜 next | 因为 LIO-SAM 有 GTSAM + cov + loop closure |
+| D1 联合 BA | 🔜 | 如果 KISS-ICP + IMU 组合方案不够 |
+
+---
+
+_Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10/§11/§12 增补于
+2026-05-31，§13/§14 增补于 2026-05-31。_
