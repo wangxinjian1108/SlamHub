@@ -36,6 +36,11 @@ RUN mkdir -p /catkin_ws/src && \
     git clone --depth 1 https://github.com/hku-mars/FAST_LIO.git /catkin_ws/src/FAST_LIO && \
     cd /catkin_ws/src/FAST_LIO && git submodule update --init --recursive
 
+# SlamHub C1: patch FAST-LIO to dump ESKF pose covariance diagonal in pos_log.txt
+COPY docker/FAST_LIO/patch_dump_cov.py /tmp/patch_dump_cov.py
+RUN python3 /tmp/patch_dump_cov.py /catkin_ws/src/FAST_LIO/src/laserMapping.cpp \
+    && rm -f /tmp/patch_dump_cov.py
+
 RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     cd /catkin_ws && \
     catkin_make -j\$(nproc) -DCATKIN_WHITELIST_PACKAGES='livox_ros_driver' && \
