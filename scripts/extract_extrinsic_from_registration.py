@@ -149,6 +149,28 @@ def load_frame_quality(quality_path):
     return out
 
 
+def load_slam_pose_covariance(path):
+    """Load C1 pose_covariance.csv -> dict ts_s_round_ns -> (var_t (3,), var_r (3,)).
+
+    We round abs-ts seconds back to int ns for lookup against ICP frame ts.
+    """
+    out = {}
+    if not path or not path.exists():
+        return out
+    with open(path) as f:
+        f.readline()  # header
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(",")
+            ts_ns = int(round(float(parts[0]) * 1e9))
+            var_t = np.array([float(parts[1]), float(parts[2]), float(parts[3])])
+            var_r = np.array([float(parts[4]), float(parts[5]), float(parts[6])])
+            out[ts_ns] = (var_t, var_r)
+    return out
+
+
 def load_frame_information(info_path):
     """Return dict ts_ns -> 6×6 info matrix (block order: ω, t)."""
     out = {}
@@ -414,11 +436,24 @@ def main():
                         "Uses Lie-algebra Newton iteration with each frame's "
                         "complete 6×6 info matrix (rotation, translation, and "
                         "coupling terms). Overrides --info-weighting.")
+    p.add_argument("--slam-cov", type=Path, default=None,
+                   help="C1: path to pose_covariance.csv produced by the patched "
+                        "FAST-LIO + poslog_to_tum.py. When provided, per-frame "
+                        "scalar weights are divided by trace(Σ_SLAM_t) so frames "
+                        "where the primary trajectory itself is uncertain "
+                        "(sharp turns, degenerate scenes) get downweighted.")
     args = p.parse_args()
 
     poses = read_trajectory_tum(args.primary_trajectory)
     pose_ts = (poses[:, 0] * 1e9).astype(np.int64)
     pose_Ts = [pose_to_T(p) for p in poses]
+
+    # C1: optional SLAM pose covariance per frame
+    slam_cov = load_slam_pose_covariance(args.slam_cov) if args.slam_cov else {}
+    slam_cov_ts = np.array(sorted(slam_cov.keys()), dtype=np.int64) \
+        if slam_cov else None
+    if slam_cov:
+        print(f"Loaded SLAM pose cov: {len(slam_cov)} entries from {args.slam_cov}")
 
     # FAST-LIO trajectory is T_world_IMU, not T_world_baselink. To recover
     # T_baselink_secondary we compose T_baselink_IMU @ T_imu_secondary.
@@ -449,6 +484,7 @@ def main():
         extrinsics = []
         weights = []
         info_list = []
+        slam_var_t_list = []
         for ts_ns, T_ws in zip(ts_list, T_world_sec_list):
             idx = int(np.argmin(np.abs(pose_ts - ts_ns)))
             T_wi = pose_Ts[idx]
@@ -458,8 +494,15 @@ def main():
             q = quality.get(int(ts_ns))
             if q is not None:
                 w = q["fitness"] * q["n_inliers"] / (q["rmse"] ** 2 + 1e-6)
+                if slam_cov_ts is not None:
+                    j = int(np.argmin(np.abs(slam_cov_ts - ts_ns)))
+                    var_t, _ = slam_cov[int(slam_cov_ts[j])]
+                    w = w / (var_t.sum() + 1e-9)
                 weights.append(w)
             info_list.append(infos.get(int(ts_ns)))
+            if slam_cov_ts is not None:
+                j = int(np.argmin(np.abs(slam_cov_ts - ts_ns)))
+                slam_var_t_list.append(slam_cov[int(slam_cov_ts[j])][0])
 
         T_unw, std_unw = aggregate_unweighted(extrinsics)
         # B2: keep only frames that have a valid info matrix; if at least
