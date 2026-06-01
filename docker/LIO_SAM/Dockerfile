@@ -61,13 +61,16 @@ RUN sed -i -E 's|-std=c\+\+1[14]|-std=c++17|g' \
 RUN sed -i 's|#include <opencv/cv.h>|#include <opencv2/opencv.hpp>|g' \
     /catkin_ws/src/LIO-SAM/include/utility.h
 
-# Patch 3: FLANN 1.9 on Ubuntu 20.04 fails to compile against C++17 + PCL 1.10
-# because /usr/include/flann/util/serialization.h calls m.serialize(ar) on
-# std::unordered_map, which has no such member. Boost provides a free
-# serialize() overload via <boost/serialization/unordered_map.hpp> — include
-# it at the very top of utility.h so all downstream PCL/FLANN/Boost-archive
-# code in LIO-SAM picks it up before flann tries the call.
-RUN sed -i '1i #include <boost/serialization/unordered_map.hpp>' \
+# Patch 3: FLANN 1.9 on Ubuntu 20.04 fails to compile against C++17 + PCL 1.10.
+# /usr/include/flann/util/serialization.h calls m.serialize(ar) as a MEMBER on
+# std::unordered_map — but unordered_map's serialize is a non-member (boost
+# free function). Replace member-call syntax with the boost free function so
+# the compile resolves correctly.
+RUN sed -i 's|m\.serialize(ar);|::boost::serialization::serialize(ar, m, 0);|g' \
+    /usr/include/flann/util/serialization.h \
+    || true
+# Also pre-pull the boost serialize header in utility.h so the call resolves.
+RUN sed -i '1i #include <boost/serialization/unordered_map.hpp>\n#include <boost/serialization/vector.hpp>' \
     /catkin_ws/src/LIO-SAM/include/utility.h
 
 RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
