@@ -1290,3 +1290,98 @@ KISS-ICP Z drift 8× 更小  →  主地图 Z 一致性提升
 
 _Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10/§11/§12 增补于
 2026-05-31，§13/§14/§15 增补于 2026-05-31。_
+
+---
+
+## 16. LIO-SAM benchmark：构建被 PCL/FLANN/C++17 卡住，暂搁置
+
+§14/§15 已确认 KISS-ICP 是当前最优主 SLAM backend。理论上 LIO-SAM（GTSAM
+factor graph + loop closure + IMU 紧耦合）应该至少跟 KISS-ICP 持平甚至更好，
+所以本节按 dockerize-submodule 模式尝试集成。**结论：构建链卡死，暂搁置**。
+
+### 16.1 集成路径（按 VRecHub dockerize-submodule pattern）
+
+| 项目 | 选择 |
+|------|------|
+| 源码源 | `thirdparty/LIO-SAM`，submodule pointing to `wangxinjian1108/LIO-SAM` |
+| 注册方式 | 直接写 `.gitmodules` + 用 `git update-index --add --cacheinfo 160000` 写 gitlink，commit pin 到 `0be1fbe6`（本地拉不动 131MB） |
+| Dockerfile | `COPY thirdparty/LIO-SAM /catkin_ws/src/LIO-SAM`（无 in-image clone） |
+| CI workflow | `actions/checkout@v4 with: submodules: recursive`（runner 网络快） |
+| GHCR 目标 | `ghcr.io/wangxinjian1108/lio-sam:latest` |
+
+### 16.2 6 次 CI build 修复链
+
+依次撞到 6 个独立编译问题，每个都修了但又冒下一个：
+
+| # | 错误 | 修复 | 结果 |
+|---|------|------|------|
+| 1 | `git clone hku-mars/LIO-SAM` slow | 改为 submodule + COPY | OK |
+| 2 | `libgtsam-dev` 不在 Ubuntu 20.04 apt | 改为 GTSAM 4.0.3 源码编译 | OK |
+| 3 | `opencv/cv.h: No such file` | sed 替换为 `opencv2/opencv.hpp` | OK |
+| 4 | PCL 1.10 要求 C++14+ | sed 把 LIO-SAM CMakeLists `-std=c++11` → `-std=c++17` | OK |
+| 5 | FLANN `unordered_map.serialize()` 方法不存在 | 加 `#include <boost/serialization/unordered_map.hpp>` | **未修复** |
+| 6 | 同上：sed flann 头文件把 member-call 改 boost free-fn | **仍未修复** |
+
+第 5 / 6 错误本质是：FLANN 1.9 (Ubuntu 20.04 default) 的内部模板 `flann::serialization::access::serialize` 对任意值类型一律调用 `value.serialize(ar)`
+方法。`std::unordered_map` 没有这个成员（boost 提供的是 free function）。
+我们的 patch 想把 member-call 改成 boost free-fn，但**该 flann 内部用的是
+`flann::serialization::LoadArchive`，跟 boost 序列化不互通**——flann 不接受
+boost::archive 的 deserialize 调用。
+
+### 16.3 真正要 fix 这事的成本
+
+需要**给 FLANN 显式加 `std::unordered_map` 的特化**，
+或者从源码重建 PCL 1.10 + FLANN 1.9 with C++17 flags + 修补的序列化模板。
+工作量是几天到一周（特别是测试覆盖所有 PCL features）。
+
+社区已知解决方案：
+
+- 切到 **Ubuntu 22.04 + ROS 2 Humble**（PCL 1.12 + FLANN 1.9 with fix）—— 但
+  LIO-SAM upstream 主分支仍是 ROS1 Noetic
+- 用 **LIO-SAM 的某些 fork**（如 LIO-SAM-with-Closed-Loop, FAST-LIO-SAM）
+  自带 patch
+- 用 `sudo make install` 装 FLANN from source with patched headers
+
+### 16.4 投入产出评估
+
+- 已投入：6 个 CI build cycle × ~10 min ≈ 60 min
+- 预期再投入到 build 通过：3-7 天（包括 fork 调研 / 重建 PCL）
+- 预期收益：和 KISS-ICP 比，最多带来 5-15% 的精度改善（loop closure
+  + factor graph），但 KISS-ICP 已经把 std 压到 cm 级，进一步收益边际
+- 当前生产瓶颈不在 SLAM 精度，而在多 sample 稳定性、debiasing、long-sequence
+  loop closure。这些都可以**不依赖 LIO-SAM** 解决
+
+### 16.5 决定
+
+- **LIO-SAM 暂搁置**。Workflow 文件改名 `docker-LIO_SAM.yml.disabled`，
+  不会再触发 CI。
+- 当前生产 backend 维持 KISS-ICP（§14/§15 确认最优）。
+- 留下来：完整的 dockerize-submodule 集成模板 + 6 个 build fix patches，
+  下次想恢复时，**只缺 FLANN 这一个 issue 要解**。
+
+### 16.6 已 commit
+
+| 文件 | 状态 |
+|------|------|
+| `.gitmodules` | LIO-SAM submodule 注册（gitlink commit `0be1fbe6`） |
+| `docker/LIO_SAM/Dockerfile` | 包含 5 个 patch（GTSAM 源码 / C++17 / opencv / boost / flann member-call） |
+| `.github/workflows/docker-LIO_SAM.yml.disabled` | workflow 被禁用 |
+| `thirdparty/LIO-SAM` (gitlink, no local checkout) | submodule pin |
+
+Commits: `2a1bde8` (添加 submodule) … `90cbb23` (最后一次 patch 尝试)。
+
+### 16.7 路线图（更新）
+
+| Track | 状态 | 备注 |
+|-------|------|------|
+| KISS-ICP 默认 backend | ✅ landed (§14/§15) | 生产用 |
+| LIO-SAM benchmark | ⏸️ 暂搁置 (§16) | FLANN/PCL/C++17 build hell |
+| RPE + alarms | ✅ landed (§13) | |
+| 多 sample 稳定性 | 🔜 next | 当前仅单段 60s 数据 |
+| Loop closure（如果需要长 SLAM） | 🔜 | KISS-ICP 没闭环；可外挂 ScanContext + GTSAM |
+| D1 联合 BA | 🔜 | 长期方向 |
+
+---
+
+_Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10/§11/§12 增补于
+2026-05-31，§13/§14/§15 增补于 2026-05-31，§16 增补于 2026-06-01。_
