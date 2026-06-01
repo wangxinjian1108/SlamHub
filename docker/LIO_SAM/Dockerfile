@@ -54,6 +54,11 @@ COPY thirdparty/LIO-SAM /catkin_ws/src/LIO-SAM
 RUN sed -i 's|set(CMAKE_CXX_FLAGS "-std=c++14|set(CMAKE_CXX_FLAGS "-std=c++17|g' \
     /catkin_ws/src/LIO-SAM/CMakeLists.txt
 
+# Patch: replace legacy <opencv/cv.h> (OpenCV 2 path) with <opencv2/opencv.hpp>
+# Ubuntu 20.04 ships OpenCV 4 which no longer provides the legacy compat header.
+RUN sed -i 's|#include <opencv/cv.h>|#include <opencv2/opencv.hpp>|g' \
+    /catkin_ws/src/LIO-SAM/include/utility.h
+
 RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     cd /catkin_ws && \
     catkin_make -j\$(nproc) -DCMAKE_BUILD_TYPE=Release" && \
