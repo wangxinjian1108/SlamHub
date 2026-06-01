@@ -58,7 +58,7 @@ def derive_ring(x, y, z, scan_line, vfov_min, vfov_max):
 
 
 def convert(recording_dir, lidar_name, output_path, scan_line, vfov_min, vfov_max,
-            lidar_topic, imu_topic):
+            lidar_topic, imu_topic, negate_accel=False):
     import rosbag
     import rospy
     from sensor_msgs.msg import PointCloud2, PointField, Imu
@@ -102,12 +102,26 @@ def convert(recording_dir, lidar_name, output_path, scan_line, vfov_min, vfov_ma
                 # Accel (gx,gy,gz) is m/s^2, "specific force" convention (gz≈-9.8 at
                 # rest, Z-up): FAST-LIO handles this — leave as-is.
                 deg2rad = np.pi / 180.0
-                msg.linear_acceleration.x = float(row["gx"])
-                msg.linear_acceleration.y = float(row["gy"])
-                msg.linear_acceleration.z = float(row["gz"])
+                # Some backends (LIO-SAM via GTSAM PreintegrationU) expect
+                # accel = +g·ẑ at rest with Z-up. Our IMU reports -g·ẑ at rest
+                # (different sign convention), so flip when requested.
+                acc_sign = -1.0 if negate_accel else 1.0
+                msg.linear_acceleration.x = acc_sign * float(row["gx"])
+                msg.linear_acceleration.y = acc_sign * float(row["gy"])
+                msg.linear_acceleration.z = acc_sign * float(row["gz"])
                 msg.angular_velocity.x = float(row["wx"]) * deg2rad
                 msg.angular_velocity.y = float(row["wy"]) * deg2rad
                 msg.angular_velocity.z = float(row["wz"]) * deg2rad
+                # LIO-SAM (and some other backends) hard-rejects IMU msgs whose
+                # orientation quaternion is all-zero with "Invalid quaternion,
+                # please use a 9-axis IMU!". We don't have a magnetometer so
+                # there's no real orientation — fill in identity (qw=1) as a
+                # placeholder. With useImuHeadingInitialization: false this
+                # value is not used for actual heading, only to pass the gate.
+                msg.orientation.x = 0.0
+                msg.orientation.y = 0.0
+                msg.orientation.z = 0.0
+                msg.orientation.w = 1.0
                 msg.orientation_covariance[0] = -1.0
                 bag.write(imu_topic, msg, msg.header.stamp)
                 imu_count += 1
@@ -138,9 +152,15 @@ def convert(recording_dir, lidar_name, output_path, scan_line, vfov_min, vfov_ma
             buf["time"] = rel_time
             buf["ring"] = ring
 
+            # PointCloud2 header.stamp must be SCAN START (t0), not the filename
+            # which is scan END. LIO-SAM computes per-point absolute time as
+            # `header.stamp + point.time` for IMU bracketing — if header.stamp
+            # is at scan end but point.time is offset from scan start, every
+            # lookup misses the IMU window by ~ scan_period.
+            t0_ns = int(round(t0 * 1e9))
             msg = PointCloud2()
             msg.header = Header()
-            msg.header.stamp = rospy.Time(frame_ts_ns // 1_000_000_000, frame_ts_ns % 1_000_000_000)
+            msg.header.stamp = rospy.Time(t0_ns // 1_000_000_000, t0_ns % 1_000_000_000)
             msg.header.frame_id = "lidar_link"
             msg.fields = point_fields
             msg.height = 1
@@ -150,7 +170,13 @@ def convert(recording_dir, lidar_name, output_path, scan_line, vfov_min, vfov_ma
             msg.is_bigendian = False
             msg.is_dense = True
             msg.data = buf.tobytes()
-            bag.write(lidar_topic, msg, msg.header.stamp)
+            # Delay LiDAR delivery 50 ms past scan_end so LIO-SAM's
+            # imageProjection has the FULL IMU window cached before the LiDAR
+            # callback fires. Without this delay imuQueue.back() < timeScanEnd
+            # and deskewInfo silently skips every frame ⇒ empty map.
+            deliver_ns = frame_ts_ns + 50_000_000
+            bag.write(lidar_topic, msg, rospy.Time(
+                deliver_ns // 1_000_000_000, deliver_ns % 1_000_000_000))
 
             if (i + 1) % 100 == 0:
                 print(f"  {i+1}/{len(pcd_files)} frames")
@@ -168,9 +194,13 @@ def main():
     p.add_argument("--vfov-max", type=float, default=14.0)
     p.add_argument("--lidar-topic", default="/velodyne_points")
     p.add_argument("--imu-topic", default="/imu/data")
+    p.add_argument("--negate-accel", action="store_true",
+                   help="Negate linear acceleration (use for LIO-SAM which "
+                        "expects GTSAM Z-up `+g at rest` convention)")
     args = p.parse_args()
     convert(args.recording_dir, args.lidar, args.output, args.scan_line,
-            args.vfov_min, args.vfov_max, args.lidar_topic, args.imu_topic)
+            args.vfov_min, args.vfov_max, args.lidar_topic, args.imu_topic,
+            negate_accel=args.negate_accel)
 
 
 if __name__ == "__main__":

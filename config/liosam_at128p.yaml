@@ -1,5 +1,6 @@
 lio_sam:
-  pointCloudTopic: "/points_raw"
+  # Must match what convert_to_rosbag_velodyne.py emits.
+  pointCloudTopic: "/velodyne_points"
   imuTopic: "/imu/data"
   odomTopic: "odometry/imu"
   gpsTopic: "odometry/gpsz"
@@ -34,19 +35,21 @@ lio_sam:
   imuGravity: 9.80511
   imuRPYWeight: 0.01
 
-  # Extrinsics: LIO-SAM uses T_imu_lidar (LiDAR pose in IMU frame).
-  # Our convert_to_rosbag_velodyne.py emits PointCloud2 in the LiDAR frame
-  # (frame_id "lidar_link") and IMU in IMU frame; both T_world_imu trajectories
-  # will need post-composition with T_baselink_imu just like FAST-LIO.
-  # The rotation matrix below is T_lidar_in_imu (R) — matches AT128P→IMU
-  # extrinsic computed in fastlio_at128p_velodyne.yaml.
+  # Extrinsics. CRITICAL convention difference vs FAST-LIO:
+  # - FAST-LIO's `extrinsic_R` is R_imu_lidar (LiDAR pose described in IMU frame:
+  #   v_imu = R * v_lidar). FAST-LIO converged with this matrix.
+  # - LIO-SAM's `extrinsicRot` is applied as `acc_out = extRot * acc_in` where
+  #   acc_in is in IMU frame and acc_out is in LiDAR frame (see imuConverter
+  #   in utility.h). So extRot here must be R_lidar_imu = R_imu_lidar^T —
+  #   the *transpose* of FAST-LIO's matrix. Using R_imu_lidar directly causes
+  #   catastrophic Z drift (observed: trajectory length 4134m, z→977m).
   extrinsicTrans: [2.3506, 0.2487, 1.2815]
-  extrinsicRot: [ 0.651421, -0.756903,  0.052425,
-                  0.753457,  0.653481,  0.072562,
-                 -0.089181, -0.007769,  0.995985]
-  extrinsicRPY: [ 0.651421, -0.756903,  0.052425,
-                  0.753457,  0.653481,  0.072562,
-                 -0.089181, -0.007769,  0.995985]
+  extrinsicRot: [ 0.651421,  0.753457, -0.089181,
+                 -0.756903,  0.653481, -0.007769,
+                  0.052425,  0.072562,  0.995985]
+  extrinsicRPY: [ 0.651421,  0.753457, -0.089181,
+                 -0.756903,  0.653481, -0.007769,
+                  0.052425,  0.072562,  0.995985]
 
   edgeThreshold: 1.0
   surfThreshold: 0.1
