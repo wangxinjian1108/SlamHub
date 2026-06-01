@@ -61,17 +61,65 @@ RUN sed -i -E 's|-std=c\+\+1[14]|-std=c++17|g' \
 RUN sed -i 's|#include <opencv/cv.h>|#include <opencv2/opencv.hpp>|g' \
     /catkin_ws/src/LIO-SAM/include/utility.h
 
-# Patch 3: FLANN 1.9 on Ubuntu 20.04 fails to compile against C++17 + PCL 1.10.
-# /usr/include/flann/util/serialization.h calls m.serialize(ar) as a MEMBER on
-# std::unordered_map — but unordered_map's serialize is a non-member (boost
-# free function). Replace member-call syntax with the boost free function so
-# the compile resolves correctly.
-RUN sed -i 's|m\.serialize(ar);|::boost::serialization::serialize(ar, m, 0);|g' \
-    /usr/include/flann/util/serialization.h \
-    || true
-# Also pre-pull the boost serialize header in utility.h so the call resolves.
-RUN sed -i '1i #include <boost/serialization/unordered_map.hpp>\n#include <boost/serialization/vector.hpp>' \
-    /catkin_ws/src/LIO-SAM/include/utility.h
+# Patch 3: FLANN 1.9 on Ubuntu 20.04 has Serializer<std::vector> and
+# Serializer<std::map> but no Serializer<std::unordered_map>. PCL 1.10's
+# index uses unordered_map, so include + specialize. Insert after the
+# std::map specialization (line ~135) — find by pattern, append a
+# Serializer<std::unordered_map<K,V>> specialization that mirrors std::map's.
+RUN python3 - <<'PYEOF'
+import re
+p = "/usr/include/flann/util/serialization.h"
+src = open(p).read()
+# Add #include <unordered_map> after the existing #include <map>
+src = re.sub(
+    r"(#include <map>)",
+    r"\1\n#include <unordered_map>",
+    src, count=1,
+)
+# Append a Serializer<std::unordered_map<K,V>> specialization after the
+# closing '};' of Serializer<std::map<K,V>>. Find the std::map specialization,
+# clone it as unordered_map.
+um_spec = """
+// SlamHub patch: serializer for std::unordered_map (PCL 1.10 needs this)
+template<typename K, typename V>
+struct Serializer<std::unordered_map<K,V> >
+{
+    template<typename InputArchive>
+    static inline void load(InputArchive& ar, std::unordered_map<K,V>& map_val)
+    {
+        size_t size;
+        ar & size;
+        for (size_t i = 0; i < size; ++i)
+        {
+            K key;
+            ar & key;
+            V value;
+            ar & value;
+            map_val[key] = value;
+        }
+    }
+
+    template<typename OutputArchive>
+    static inline void save(OutputArchive& ar, const std::unordered_map<K,V>& map_val)
+    {
+        ar & map_val.size();
+        for (typename std::unordered_map<K,V>::const_iterator i=map_val.begin(); i!=map_val.end(); ++i) {
+            ar & i->first;
+            ar & i->second;
+        }
+    }
+};
+"""
+# Insert right after the closing brace of std::map specialization
+m = re.search(r"(struct Serializer<std::map<K,V> >.*?\n\};\n)",
+              src, re.DOTALL)
+if not m:
+    raise SystemExit("std::map specialization not found in flann serialization.h")
+src = src[:m.end()] + um_spec + src[m.end():]
+open(p, "w").write(src)
+print("FLANN patched: added std::unordered_map serializer specialization")
+PYEOF
+RUN grep -A 1 "unordered_map serializer" /usr/include/flann/util/serialization.h | head -5
 
 RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     cd /catkin_ws && \
