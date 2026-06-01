@@ -61,6 +61,15 @@ RUN sed -i -E 's|-std=c\+\+1[14]|-std=c++17|g' \
 RUN sed -i 's|#include <opencv/cv.h>|#include <opencv2/opencv.hpp>|g' \
     /catkin_ws/src/LIO-SAM/include/utility.h
 
+# Patch 3: FLANN 1.9 on Ubuntu 20.04 fails to compile against C++17 + PCL 1.10
+# because /usr/include/flann/util/serialization.h calls m.serialize(ar) on
+# std::unordered_map, which has no such member. Boost provides a free
+# serialize() overload via <boost/serialization/unordered_map.hpp> — include
+# it at the very top of utility.h so all downstream PCL/FLANN/Boost-archive
+# code in LIO-SAM picks it up before flann tries the call.
+RUN sed -i '1i #include <boost/serialization/unordered_map.hpp>' \
+    /catkin_ws/src/LIO-SAM/include/utility.h
+
 RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/setup.bash && \
     cd /catkin_ws && \
     catkin_make -j\$(nproc) -DCMAKE_BUILD_TYPE=Release" && \
