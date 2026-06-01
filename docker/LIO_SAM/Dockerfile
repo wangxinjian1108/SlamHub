@@ -49,12 +49,14 @@ RUN git clone --branch 4.0.3 --depth 1 https://github.com/borglab/gtsam.git /tmp
 RUN mkdir -p /catkin_ws/src
 COPY thirdparty/LIO-SAM /catkin_ws/src/LIO-SAM
 
-# Patch: latest C++17 toolchain rejects pcl::uint16_t-style template-template
-# argument deductions; force LIO-SAM to use C++17 (default Noetic CMake is 14).
-RUN sed -i 's|set(CMAKE_CXX_FLAGS "-std=c++14|set(CMAKE_CXX_FLAGS "-std=c++17|g' \
-    /catkin_ws/src/LIO-SAM/CMakeLists.txt
+# Patch 1: LIO-SAM CMakeLists.txt pins -std=c++11, but PCL 1.10 on Ubuntu 20.04
+# requires C++14+. Bump to C++17 (works with both PCL and GTSAM 4.0.3).
+# Use a permissive sed that matches c++11 / c++14 alike.
+RUN sed -i -E 's|-std=c\+\+1[14]|-std=c++17|g' \
+    /catkin_ws/src/LIO-SAM/CMakeLists.txt && \
+    grep -E 'std=c\+\+' /catkin_ws/src/LIO-SAM/CMakeLists.txt
 
-# Patch: replace legacy <opencv/cv.h> (OpenCV 2 path) with <opencv2/opencv.hpp>
+# Patch 2: replace legacy <opencv/cv.h> (OpenCV 2 path) with <opencv2/opencv.hpp>
 # Ubuntu 20.04 ships OpenCV 4 which no longer provides the legacy compat header.
 RUN sed -i 's|#include <opencv/cv.h>|#include <opencv2/opencv.hpp>|g' \
     /catkin_ws/src/LIO-SAM/include/utility.h
