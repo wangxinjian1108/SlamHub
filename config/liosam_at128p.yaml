@@ -1,0 +1,83 @@
+lio_sam:
+  pointCloudTopic: "/points_raw"
+  imuTopic: "/imu/data"
+  odomTopic: "odometry/imu"
+  gpsTopic: "odometry/gpsz"
+
+  lidarFrame: "base_link"
+  baselinkFrame: "base_link"
+  odometryFrame: "odom"
+  mapFrame: "map"
+
+  # No GPS in our data
+  useImuHeadingInitialization: false
+  useGpsElevation: false
+  gpsCovThreshold: 2.0
+  poseCovThreshold: 25.0
+
+  savePCD: true
+  savePCDDirectory: "/output/"
+
+  # AT128P: 128 lines, 10 Hz, mechanical
+  sensor: velodyne
+  N_SCAN: 128
+  Horizon_SCAN: 1800
+  downsampleRate: 1
+  lidarMinRange: 1.0
+  lidarMaxRange: 200.0
+
+  # IMU noise — start with LIO-SAM defaults (we'll iterate if needed)
+  imuAccNoise: 3.9939570888238808e-03
+  imuGyrNoise: 1.5636343949698187e-03
+  imuAccBiasN: 6.4356659353532566e-05
+  imuGyrBiasN: 3.5640318696367613e-05
+  imuGravity: 9.80511
+  imuRPYWeight: 0.01
+
+  # Extrinsics: LIO-SAM uses T_imu_lidar (LiDAR pose in IMU frame).
+  # Our convert_to_rosbag_velodyne.py emits PointCloud2 in the LiDAR frame
+  # (frame_id "lidar_link") and IMU in IMU frame; both T_world_imu trajectories
+  # will need post-composition with T_baselink_imu just like FAST-LIO.
+  # The rotation matrix below is T_lidar_in_imu (R) — matches AT128P→IMU
+  # extrinsic computed in fastlio_at128p_velodyne.yaml.
+  extrinsicTrans: [2.3506, 0.2487, 1.2815]
+  extrinsicRot: [ 0.651421, -0.756903,  0.052425,
+                  0.753457,  0.653481,  0.072562,
+                 -0.089181, -0.007769,  0.995985]
+  extrinsicRPY: [ 0.651421, -0.756903,  0.052425,
+                  0.753457,  0.653481,  0.072562,
+                 -0.089181, -0.007769,  0.995985]
+
+  edgeThreshold: 1.0
+  surfThreshold: 0.1
+  edgeFeatureMinValidNum: 10
+  surfFeatureMinValidNum: 100
+
+  odometrySurfLeafSize: 0.4
+  mappingCornerLeafSize: 0.2
+  mappingSurfLeafSize: 0.4
+
+  z_tollerance: 1000
+  rotation_tollerance: 1000
+
+  numberOfCores: 4
+  mappingProcessInterval: 0.15
+
+  surroundingkeyframeAddingDistThreshold: 1.0
+  surroundingkeyframeAddingAngleThreshold: 0.2
+  surroundingKeyframeDensity: 2.0
+  surroundingKeyframeSearchRadius: 50.0
+
+  # Loop closure
+  loopClosureEnableFlag: true
+  loopClosureFrequency: 1.0
+  surroundingKeyframeSize: 50
+  historyKeyframeSearchRadius: 15.0
+  historyKeyframeSearchTimeDiff: 30.0
+  historyKeyframeSearchNum: 25
+  historyKeyframeFitnessScore: 0.3
+
+  # Visualization
+  globalMapVisualizationSearchRadius: 1000.0
+  globalMapVisualizationPoseDensity: 10.0
+  globalMapVisualizationLeafSize: 1.0
