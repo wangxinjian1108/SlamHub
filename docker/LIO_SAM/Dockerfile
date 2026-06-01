@@ -44,9 +44,10 @@ RUN git clone --branch 4.0.3 --depth 1 https://github.com/borglab/gtsam.git /tmp
     rm -rf /tmp/gtsam && \
     ldconfig
 
-# Build LIO-SAM
-RUN mkdir -p /catkin_ws/src && \
-    git clone --depth 1 https://github.com/TixiaoShan/LIO-SAM.git /catkin_ws/src/LIO-SAM
+# Bring in LIO-SAM source from the SlamHub git submodule (no in-image clone).
+# Repo root is the docker build context, so thirdparty/LIO-SAM/* is available.
+RUN mkdir -p /catkin_ws/src
+COPY thirdparty/LIO-SAM /catkin_ws/src/LIO-SAM
 
 # Patch: latest C++17 toolchain rejects pcl::uint16_t-style template-template
 # argument deductions; force LIO-SAM to use C++17 (default Noetic CMake is 14).
