@@ -27,11 +27,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-${ROS_DISTRO}-robot-localization \
     python3-catkin-tools python3-pip python3-rosbag \
     libpcl-dev libeigen3-dev libgflags-dev libgoogle-glog-dev \
-    libboost-all-dev libgtsam-dev libgtsam-unstable-dev \
+    libboost-all-dev libtbb-dev libmetis-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /var/run/sshd /root/.ssh && ssh-keygen -A
 RUN pip3 install --no-cache-dir scipy
+
+# Build GTSAM 4.0.3 from source (LIO-SAM's tested version; not in Ubuntu 20.04 apt).
+RUN git clone --branch 4.0.3 --depth 1 https://github.com/borglab/gtsam.git /tmp/gtsam && \
+    cd /tmp/gtsam && mkdir build && cd build && \
+    cmake -DCMAKE_BUILD_TYPE=Release -DGTSAM_BUILD_TESTS=OFF \
+          -DGTSAM_BUILD_EXAMPLES_ALWAYS=OFF -DGTSAM_USE_SYSTEM_EIGEN=ON \
+          -DGTSAM_BUILD_WITH_MARCH_NATIVE=OFF -DGTSAM_POSE3_EXPMAP=ON \
+          -DGTSAM_ROT3_EXPMAP=ON .. && \
+    make -j$(nproc) && make install && \
+    rm -rf /tmp/gtsam && \
+    ldconfig
 
 # Build LIO-SAM
 RUN mkdir -p /catkin_ws/src && \
