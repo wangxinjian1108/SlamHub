@@ -12,9 +12,10 @@ def load_calib(path, key="calibrated_extrinsics"):
 
 def main():
     inputs = {
-        "FAST-LIO": Path("output/ghcr_run_v3/calib_B2_pl_infow.yaml"),
-        "KISS-ICP": Path("output/kiss_icp_run/calibrated_extrinsics.yaml"),
-        "LIO-SAM":  Path("output/liosam_run/calibrated_extrinsics.yaml"),
+        "FAST-LIO":  Path("output/ghcr_run_v3/calib_B2_pl_infow.yaml"),
+        "KISS-ICP":  Path("output/kiss_icp_run/calibrated_extrinsics.yaml"),
+        "LIO-SAM":   Path("output/liosam_run/calibrated_extrinsics.yaml"),
+        "LIO-SAM*":  Path("output/liosam_run_hybrid/calibrated_extrinsics.yaml"),
     }
     calibs = {name: load_calib(p) for name, p in inputs.items()}
 
@@ -40,11 +41,11 @@ def main():
                 "dt_norm": dnorm,
             })
 
-    print(f"{'secondary':<11} {'primary':<9} {'dx_std':>7} {'dy_std':>7} {'dz_std':>7} {'n_eff':>6} {'|dt|':>6}")
-    print("-" * 60)
+    print(f"{'secondary':<11} {'primary':<10} {'dx_std':>7} {'dy_std':>7} {'dz_std':>7} {'n_eff':>6} {'|dt|':>6}")
+    print("-" * 62)
     for r in rows:
         d = lambda v, fmt: f"{v:{fmt}}" if v is not None else "  --  "
-        print(f"{r['secondary']:<11} {r['primary']:<9} "
+        print(f"{r['secondary']:<11} {r['primary']:<10} "
               f"{d(r['dx_std'], '7.3f')} {d(r['dy_std'], '7.3f')} {d(r['dz_std'], '7.3f')} "
               f"{d(r['n_eff'], '6.1f')} {d(r['dt_norm'], '6.3f')}")
 
