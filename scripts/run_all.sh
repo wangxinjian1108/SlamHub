@@ -1,13 +1,14 @@
 #!/bin/bash
 set -euo pipefail
 
-# Usage: ./run_all.sh [--backend {genz_icp|kiss_icp|fast_lio}] <recording_dir> [primary_lidar] [output_dir]
+# Usage: ./run_all.sh [--backend {mad_icp|genz_icp|kiss_icp|fast_lio}] <recording_dir> [primary_lidar] [output_dir]
 #
 # SlamHub end-to-end pipeline:
 #   01 — Primary SLAM
-#       GenZ-ICP (default): adaptive-weighted voxel ICP, no IMU, no Docker
-#       KISS-ICP:           native Python, no IMU, no Docker
-#       FAST-LIO:           in GHCR container, LiDAR + IMU
+#       MAD-ICP (default): matching-data odometry, no IMU, no Docker (§20: best |dt| across samples)
+#       GenZ-ICP:          adaptive-weighted voxel ICP, no IMU, no Docker (best ATE on long recordings)
+#       KISS-ICP:          native Python, no IMU, no Docker
+#       FAST-LIO:          in GHCR container, LiDAR + IMU
 #   02 — Cross-LiDAR registration (icp_pl, point-to-plane)
 #   03 — Extrinsic aggregation (B2 axis-info-weighted)
 #   04 — Trajectory eval vs LIDAR_TO_MAP (ATE + RPE)
@@ -15,7 +16,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-BACKEND="genz_icp"
+BACKEND="mad_icp"
 while [[ "${1:-}" == --* ]]; do
     case "$1" in
         --backend)
@@ -50,6 +51,17 @@ echo "=============================="
 echo " Step 01: Primary SLAM ($BACKEND)"
 echo "=============================="
 case "$BACKEND" in
+    mad_icp)
+        REUSE_FLAG=""
+        if [ -d "$OUTPUT_DIR/../$(basename "$RECORDING_DIR")_kiss_icp/cleaned_pcds" ]; then
+            REUSE_FLAG="--cleaned-pcd-dir $OUTPUT_DIR/../$(basename "$RECORDING_DIR")_kiss_icp/cleaned_pcds"
+        fi
+        python3 "$SCRIPT_DIR/run_mad_icp.py" \
+            "$RECORDING_DIR" \
+            --primary-lidar "$PRIMARY_LIDAR" \
+            --output-dir "$OUTPUT_DIR" \
+            $REUSE_FLAG
+        ;;
     genz_icp)
         # Reuse cleaned PCDs from a previous KISS-ICP run if available, since
         # the NaN-strip step is identical and slow.

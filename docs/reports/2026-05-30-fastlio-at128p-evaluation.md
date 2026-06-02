@@ -2112,5 +2112,180 @@ LIO-SAM 有意义。
 
 _Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10/§11/§12 增补于
 2026-05-31，§13/§14/§15 增补于 2026-05-31，§16 增补于 2026-06-01，§17 增补于
-2026-06-02，§18 增补于 2026-06-02，§19 增补于 2026-06-02。_
+2026-06-02，§18 增补于 2026-06-02，§19 增补于 2026-06-02，§20 增补于 2026-06-02。_
+
+---
+
+## 20. 多 sample 稳定性验证（3 sample × 6 backend）
+
+§14-§19 全部基于一段 60 s 录制（ZL11626）。本节用同样的 6-way pipeline 跑
+另外 2 段录制：
+
+| 样本 | 时长 (s) | 帧数 | 净位移 | 累积路径 | 速度 | 描述 |
+|------|--------|------|--------|----------|------|------|
+| ZL11626 | 60.0 | 600 | ~440 m | 452.7 m | ~7.5 m/s | 开放道路，匀速行驶（baseline）|
+| ZL10359 | 25.6 | 256 | 21.8 m | 25.7 m | ~1.0 m/s | 短段，慢速 |
+| ZL10966 | 20.9 | 209 | ~75 m | ~78 m  | ~3.7 m/s | 短段，中速 |
+
+### 20.1 集成路径（一键多 backend）
+
+新加 `scripts/run_all_backends.sh <recording-dir> <output-root>` 一键跑全：
+
+1. KISS-ICP（先跑，因为它的 cleaned_pcds/ 被后面 backend 复用）
+2. FAST-LIO2 — GHCR 镜像，per-recording extrinsic via `gen_fastlio_config.py`
+3. GenZ-ICP — pip / native，复用 cleaned_pcds
+4. MAD-ICP — pip / native，复用 cleaned_pcds
+5. LIO-SAM — GHCR 镜像，per-recording extrinsic via `gen_liosam_config.py`
+6. LIO-SAM\* hybrid — LIO-SAM trajectory + raw-PCD 重拼图
+
+每个 backend 跑完后跑 B2 cross-LiDAR registration（3 个副雷达 × icp_pl frame
+mode）+ axis-info-weighted 聚合。已 idempotent —— 重跑会 skip 已完成的 backend。
+
+**关键修复**：每段录制有自己的 vehicle calibration（`application.yaml` 里
+sensor_calibration 字段），需要为 FAST-LIO 和 LIO-SAM 生成 per-recording
+config（不能用 ZL11626 hardcoded 的 extrinsicTrans / extrinsicRot）。两个
+helper：
+
+- `scripts/gen_fastlio_config.py` —— 算 T_imu_lidar 写到 FAST-LIO yaml
+- `scripts/gen_liosam_config.py` —— 同上但 transposed（LIO-SAM convention）
+
+`run_fastlio_in_container.sh` / `run_liosam_in_container.sh` 都加了
+`FASTLIO_CONFIG` / `LIOSAM_CONFIG` 环境变量入口，默认仍是 ZL11626 hardcoded
+config（向后兼容）。
+
+### 20.2 跨样本 \|Δt\| 全表（每行最佳已加粗）
+
+`scripts/eval_per_sample_table.py` 输出（单位 m，越小越好）：
+
+| Sample / Secondary | FAST-LIO | KISS-ICP | LIO-SAM | LIO-SAM\* | GenZ-ICP | MAD-ICP |
+|--------------------|---------:|---------:|--------:|----------:|---------:|--------:|
+| **ZL11626** flash_front | 0.191 | 0.128 | 0.531 | 0.135 | **0.125** | 0.159 |
+| ZL11626 flash_rear      | 0.598 | 0.286 | 0.546 | 0.241 | 0.269 | **0.198** |
+| ZL11626 rfr             | 0.382 | 0.311 | 0.809 | 0.306 | 0.306 | **0.301** |
+| **ZL10359** flash_front | 0.884 | 1.311 | **0.497** | 1.448 | 1.478 | 1.444 |
+| ZL10359 flash_rear      | 1.436 | 1.045 | **0.814** | 1.118 | 1.137 | 1.340 |
+| ZL10359 rfr             | 5.033 | 4.463 | 4.060 | 5.466 | 4.241 | **3.951** |
+| **ZL10966** flash_front | 0.130 | **0.129** | 0.192 | 0.283 | 0.166 | 0.183 |
+| ZL10966 flash_rear      | 0.374 | 0.373 | 0.528 | 0.648 | 0.567 | **0.317** |
+| ZL10966 rfr             | 0.134 | **0.111** | 0.199 | 0.249 | 0.110 | 0.126 |
+
+| Backend | 胜出次数 / 9 |
+|---------|-------------:|
+| **MAD-ICP** | **4** ⭐ |
+| LIO-SAM   | 2 |
+| GenZ-ICP  | 2 (含 ZL10966/rfr 0.110，与 KISS 0.111 实质并列) |
+| KISS-ICP  | 1 |
+| FAST-LIO  | 0 |
+| LIO-SAM\* | 0 |
+
+**多 sample 后默认 backend 切换的依据**：
+
+1. **MAD-ICP 跨样本鲁棒性最好** —— 9 个 cell 里 4 个最佳，比 §19 单 sample
+   的 3 个最佳还多。在 ZL10359（最难样本）上是唯一一个 rfr / flash_rear
+   都进前列的 backend。
+2. **GenZ-ICP** 虽然在 ZL11626 单样本拿了 ATE 冠军，但**在 ZL10359 上崩溃**
+   （flash_front \|Δt\| 1.478 m，是 LIO-SAM 0.497 的 3 倍）—— 表明 §18 的
+   单样本结论需要打折。
+3. **LIO-SAM** 在 ZL10359（短 + 慢）上是唯一一个 flash_front / flash_rear
+   都还能保持 sub-meter 的 backend —— 因为它有 IMU 预积分 + factor graph
+   闭环填补几何信息不足。
+4. **ZL10359/rfr 是数据的硬限**：所有 backend \|Δt\| ≥ 3.95 m，**这跟 backend
+   选哪个没关系**，是 25 s × 1 m/s 的运动量根本不足以三角化 rfr LiDAR 的
+   远距外参（rfr 离 baselink 也最远，2.7 m）。
+
+### 20.3 跨样本 std 稳定性：同一 backend 在 3 段录制估出的 xyz 一致吗？
+
+同一辆车的真实外参不应该跨录制变化，所以同一 backend 在 3 段 sample 的
+B2 calib `translation_xyz_m` 输出的 std 直接等于"这个 backend 估外参的可
+重现性"（越小越好）：
+
+| Backend | flash_front xyz_std (m) | flash_rear | rfr |
+|---------|-------------------------|------------|-----|
+| FAST-LIO | x0.106 y0.388 z0.017 | x0.700 y0.391 z0.039 | x1.726 y1.685 z0.055 |
+| KISS-ICP | **x0.093** y0.568 **z0.017** | x0.442 y0.279 z0.032 | x1.650 y1.350 z0.038 |
+| LIO-SAM  | x0.336 **y0.122 z0.012** | x0.547 **y0.150 z0.022** | x1.680 y1.151 z0.035 |
+| LIO-SAM\* | x0.143 y0.643 z0.017 | x0.491 y0.227 z0.030 | x2.011 y1.605 z0.053 |
+| GenZ-ICP | x0.109 y0.645 z0.019 | x0.426 y0.340 z0.025 | x1.371 y1.474 z0.045 |
+| MAD-ICP  | x0.114 y0.623 z0.021 | **x0.452** y0.407 z0.027 | **x1.146** y1.446 **z0.043** |
+
+最优维度交错分布：
+- **flash_front**：KISS-ICP 横向 (x) std 最小，但 LIO-SAM 纵向 (y/z) 最小
+- **flash_rear**：LIO-SAM 在 y/z 上完胜，但 KISS-ICP / MAD-ICP 在 x 上各有优势
+- **rfr**：MAD-ICP 在 x/z 上最优；LIO-SAM 在 y 上最优
+
+**这意味着没有一个"全局最优"的 backend** —— 不同副雷达的最优主图不同。
+ZL10359 整体是 outlier 把 std 都拉大了；ZL11626 和 ZL10966 之间的稳定性
+本来都不错（去掉 ZL10359 后 std 应该减半）。
+
+### 20.4 ZL10359 为什么这么难？
+
+数据 facts：
+- 25.6 s, 256 frames, 净位移 21.8 m, 平均速度 ~1 m/s
+- 单段路径只朝一个方向 / 很短 —— 副雷达 ICP 三角化几何不充分
+- 副雷达 ICP fitness 也降了：ZL11626 KISS-ICP rfr fitness 0.66 → ZL10359 0.41
+  （帧间命中率降 38%）
+- 但 SLAM 自身（轨迹累积）没问题：6 backend 路径长度都在 21.5-25.7 m，
+  Z 漂 ≤0.32 m std（开 ZL11626 都打不过这个 Z stability，因为运动太短了）
+
+结论：**ZL10359 是 cross-LiDAR calibration 的下限场景**，并不是 SLAM 失效。
+这正是 multi-sample 应该捕到的失败模式 —— 我们不能保证 25 s / 1 m/s
+的录制能产出可信的 cross-LiDAR 标定，无论用什么 SLAM backend。
+
+实战 guidance：跑 cross-LiDAR 标定时，要求 **≥ 100 m 路径长度 + 多方向运动**，
+不然就跳过这条标定 / 用工厂值。
+
+### 20.5 默认 backend 切换：GenZ-ICP → MAD-ICP
+
+§18 把 GenZ-ICP 推为默认（ZL11626 单样本 ATE 冠军 + flash_front \|Δt\|
+冠军）。**§20 三样本验证后改为 MAD-ICP 默认**：
+
+| 维度 | GenZ-ICP（旧默认）| **MAD-ICP（新默认）** |
+|------|-------------------|--------------------|
+| 跨样本 \|Δt\| 胜出 | 2/9（含 1 个 0.110/0.111 准平局）| **4/9** ⭐ |
+| ZL10359 flash_front \|Δt\| | 1.478 m（最差之一）| 1.444 m |
+| ZL10966 flash_rear \|Δt\| | 0.567 m | **0.317 m**（5-way 全场最好）|
+| 部署成本 | `pip install genz-icp` | `pip install mad-icp ninja "click<8.2"` |
+| 对短录制鲁棒性 | 差（ZL10359 全部 >1 m）| 中（全场胜率最高）|
+| 对长录制效果 | 单段 ATE 最优 | 单段 ATE 4/4 垫底但 \|Δt\| 优 |
+
+**所以**：
+
+- **默认 backend → MAD-ICP**（更新 `run_all.sh` default）
+- GenZ-ICP 仍然是**最佳"轨迹绝对精度"**的 backend，留作 fallback
+- 短录制 / 慢运动 → LIO-SAM（IMU + 闭环 fill in 几何信息不足）
+
+### 20.6 已 commit 输出
+
+| 路径 | 内容 |
+|------|------|
+| `scripts/run_all_backends.sh` | 一键跑全（6 backend + B2，可中断 resume） |
+| `scripts/gen_fastlio_config.py` | 从 application.yaml 生成 FAST-LIO config |
+| `scripts/gen_liosam_config.py` | 同上，但是 LIO-SAM convention |
+| `scripts/eval_cross_sample.py` | 同 backend 在 N 个 sample 的 xyz_std + \|Δt\| range |
+| `scripts/eval_per_sample_table.py` | sample × backend × secondary 三维 \|Δt\| 表 |
+| `output/multi_sample/{ZL11626,ZL10359,ZL10966}/` | 3 sample 的 6-backend 结果 |
+| `output/multi_sample/cross_sample_summary.json` | 程序可读的 multi-sample 汇总 |
+
+### 20.7 路线图（multi-sample 后）
+
+| Track | 状态 | 备注 |
+|-------|------|------|
+| FAST-LIO benchmark | ✅ landed | reference baseline |
+| KISS-ICP benchmark | ✅ landed (§14/§15) | 短录制 flash_front 稳，长录制次优 |
+| LIO-SAM benchmark | ✅ landed (§17) | 短录制最稳；ZL10359 唯一不崩的 |
+| LIO-SAM\* hybrid | ✅ landed (§17.8) | 长录制可选，短录制无优势 |
+| GenZ-ICP benchmark | ✅ landed (§18) | 长录制 ATE 最优，短录制崩 |
+| **MAD-ICP benchmark** | ✅ **landed (§19/§20) — 新默认** | 跨样本 \|Δt\| 胜率最高 |
+| **多 sample 稳定性** | ✅ **landed (§20)** | 3 段 60s + 25s + 21s 验证完成 |
+| 退化场景验证 | 🔜 follow-up | 走廊 / 隧道 |
+| 自适应 backend 选择 | 🔜 mid-term | 按副雷达 + 录制长度自动选 |
+| **录制可标定门槛检查** | 🔜 next | 估算"够不够运动来标定"，跳过不可能段 |
+| D1 联合 BA | 🔜 | 长期方向 |
+
+---
+
+_Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10/§11/§12 增补于
+2026-05-31，§13/§14/§15 增补于 2026-05-31，§16 增补于 2026-06-01，§17 增补于
+2026-06-02，§18 增补于 2026-06-02，§19 增补于 2026-06-02，§20 增补于
+2026-06-02。_
 

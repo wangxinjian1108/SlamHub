@@ -22,7 +22,11 @@ python3 /workspace/scripts/convert_to_rosbag_velodyne.py "$RECORDING" \
 
 echo ""
 echo "=== Step 2: Copy AT128P config into FAST_LIO ==="
-cp /workspace/config/fastlio_at128p_velodyne.yaml /catkin_ws/src/FAST_LIO/config/at128p.yaml
+# FASTLIO_CONFIG points to a recording-specific config (extrinsic_T/R pinned
+# to per-vehicle calibration). Falls back to the committed default.
+FASTLIO_CONFIG="${FASTLIO_CONFIG:-/workspace/config/fastlio_at128p_velodyne.yaml}"
+echo "Using config: $FASTLIO_CONFIG"
+cp "$FASTLIO_CONFIG" /catkin_ws/src/FAST_LIO/config/at128p.yaml
 
 # Write a headless launch (no rviz)
 cat > /catkin_ws/src/FAST_LIO/launch/mapping_at128p.launch <<'EOF'

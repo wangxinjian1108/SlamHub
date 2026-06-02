@@ -27,7 +27,12 @@ fi
 
 echo ""
 echo "=== Step 2: Copy LIO-SAM config + launch ==="
-cp /workspace/config/liosam_at128p.yaml /catkin_ws/src/LIO-SAM/config/at128p.yaml
+# LIOSAM_CONFIG points to a recording-specific config (extrinsicTrans/Rot
+# pinned to per-vehicle calibration). Falls back to the committed default
+# tuned for ZL11626 if not provided.
+LIOSAM_CONFIG="${LIOSAM_CONFIG:-/workspace/config/liosam_at128p.yaml}"
+echo "Using config: $LIOSAM_CONFIG"
+cp "$LIOSAM_CONFIG" /catkin_ws/src/LIO-SAM/config/at128p.yaml
 
 # Headless launch (no rviz).
 # respawn=false: we want the FIRST crash to be visible so we can grab the
