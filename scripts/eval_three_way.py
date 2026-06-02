@@ -53,6 +53,7 @@ def main():
         "FAST-LIO": Path("output/ghcr_run_v3/trajectory.txt"),
         "KISS-ICP": Path("output/kiss_icp_run/trajectory_imu.txt"),
         "LIO-SAM":  Path("output/liosam_run/trajectory.txt"),
+        "GenZ-ICP": Path("output/genz_icp_run/trajectory.txt"),
     }
     raw = {name: load_tum(p) for name, p in inputs.items()}
 
@@ -63,11 +64,13 @@ def main():
         zr = (xyz[:, 2].min(), xyz[:, 2].max())
         print(f"{name:<10} {len(t):>7}  {L:>10.2f}  [{zr[0]:>7.3f},{zr[1]:>7.3f}]      {xyz[:,2].std():>5.3f}")
 
-    # Use FAST-LIO as reference, align KISS-ICP and LIO-SAM to it
+    # Use FAST-LIO as reference, align KISS-ICP / LIO-SAM / GenZ-ICP to it
     fl_t, fl_xyz = raw["FAST-LIO"]
     aligned = {"FAST-LIO": fl_xyz}
     metrics = {}
-    for name in ("KISS-ICP", "LIO-SAM"):
+    for name in ("KISS-ICP", "LIO-SAM", "GenZ-ICP"):
+        if name not in raw:
+            continue
         t_e, xyz_e = raw[name]
         idx_e, idx_r = time_associate(fl_t, fl_xyz, t_e, xyz_e)
         if len(idx_e) < 3:
@@ -99,8 +102,10 @@ def main():
         print(f"{name:<10} {m['n_pairs']:>6}  {m['ate_rmse']:>8.3f}m {m['ate_mean']:>5.3f}m {m['ate_max']:>5.3f}m  {m['yaw_to_fl_deg']:>7.2f}°  {m['rpe_med_pct']:>7.2f}%  {m['rpe_p90_pct']:>7.2f}%")
 
     # --- Plots ---
-    colors = {"FAST-LIO": "tab:blue", "KISS-ICP": "tab:green", "LIO-SAM": "tab:red"}
-    styles = {"FAST-LIO": "-", "KISS-ICP": "-.", "LIO-SAM": "--"}
+    colors = {"FAST-LIO": "tab:blue", "KISS-ICP": "tab:green",
+              "LIO-SAM": "tab:red",  "GenZ-ICP": "tab:purple"}
+    styles = {"FAST-LIO": "-", "KISS-ICP": "-.",
+              "LIO-SAM":  "--", "GenZ-ICP": ":"}
 
     fig, ax = plt.subplots(figsize=(11, 8))
     for name, xyz in aligned.items():
@@ -108,7 +113,7 @@ def main():
                 label=f"{name} ({len(xyz)} pts)")
     ax.scatter(fl_xyz[0, 0], fl_xyz[0, 1], c="black", s=80, marker="o", zorder=5, label="start")
     ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)"); ax.axis("equal")
-    ax.set_title("Three-way trajectory overlay (KISS-ICP and LIO-SAM SE(3)-aligned to FAST-LIO)")
+    ax.set_title("4-way trajectory overlay (others SE(3)-aligned to FAST-LIO)")
     ax.grid(True, alpha=0.3); ax.legend()
     fig.tight_layout(); fig.savefig(out_dir / "three_way_topdown.png", dpi=120); plt.close(fig)
 

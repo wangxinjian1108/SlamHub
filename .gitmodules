@@ -7,3 +7,6 @@
 [submodule "thirdparty/LIO-SAM"]
 	path = thirdparty/LIO-SAM
 	url = https://github.com/wangxinjian1108/LIO-SAM.git
+[submodule "thirdparty/genz-icp"]
+	path = thirdparty/genz-icp
+	url = https://github.com/wangxinjian1108/genz-icp.git
