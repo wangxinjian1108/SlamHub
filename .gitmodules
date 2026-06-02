@@ -10,3 +10,6 @@
 [submodule "thirdparty/genz-icp"]
 	path = thirdparty/genz-icp
 	url = https://github.com/wangxinjian1108/genz-icp.git
+[submodule "thirdparty/mad-icp"]
+	path = thirdparty/mad-icp
+	url = https://github.com/wangxinjian1108/mad-icp.git

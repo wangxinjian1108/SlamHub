@@ -54,6 +54,7 @@ def main():
         "KISS-ICP": Path("output/kiss_icp_run/trajectory_imu.txt"),
         "LIO-SAM":  Path("output/liosam_run/trajectory.txt"),
         "GenZ-ICP": Path("output/genz_icp_run/trajectory.txt"),
+        "MAD-ICP":  Path("output/mad_icp_run/trajectory.txt"),
     }
     raw = {name: load_tum(p) for name, p in inputs.items()}
 
@@ -64,11 +65,11 @@ def main():
         zr = (xyz[:, 2].min(), xyz[:, 2].max())
         print(f"{name:<10} {len(t):>7}  {L:>10.2f}  [{zr[0]:>7.3f},{zr[1]:>7.3f}]      {xyz[:,2].std():>5.3f}")
 
-    # Use FAST-LIO as reference, align KISS-ICP / LIO-SAM / GenZ-ICP to it
+    # Use FAST-LIO as reference, align KISS-ICP / LIO-SAM / GenZ-ICP / MAD-ICP to it
     fl_t, fl_xyz = raw["FAST-LIO"]
     aligned = {"FAST-LIO": fl_xyz}
     metrics = {}
-    for name in ("KISS-ICP", "LIO-SAM", "GenZ-ICP"):
+    for name in ("KISS-ICP", "LIO-SAM", "GenZ-ICP", "MAD-ICP"):
         if name not in raw:
             continue
         t_e, xyz_e = raw[name]
@@ -103,9 +104,14 @@ def main():
 
     # --- Plots ---
     colors = {"FAST-LIO": "tab:blue", "KISS-ICP": "tab:green",
-              "LIO-SAM": "tab:red",  "GenZ-ICP": "tab:purple"}
+              "LIO-SAM": "tab:red",  "GenZ-ICP": "tab:purple",
+              "MAD-ICP": "tab:orange"}
+    # matplotlib's plot() rejects tuple dash specs in the fmt string slot,
+    # so keep all styles as named strings — uniqueness is good enough for
+    # 5 lines.
     styles = {"FAST-LIO": "-", "KISS-ICP": "-.",
-              "LIO-SAM":  "--", "GenZ-ICP": ":"}
+              "LIO-SAM":  "--", "GenZ-ICP": ":",
+              "MAD-ICP":  "-"}
 
     fig, ax = plt.subplots(figsize=(11, 8))
     for name, xyz in aligned.items():
@@ -113,7 +119,7 @@ def main():
                 label=f"{name} ({len(xyz)} pts)")
     ax.scatter(fl_xyz[0, 0], fl_xyz[0, 1], c="black", s=80, marker="o", zorder=5, label="start")
     ax.set_xlabel("X (m)"); ax.set_ylabel("Y (m)"); ax.axis("equal")
-    ax.set_title("4-way trajectory overlay (others SE(3)-aligned to FAST-LIO)")
+    ax.set_title("5-way trajectory overlay (others SE(3)-aligned to FAST-LIO)")
     ax.grid(True, alpha=0.3); ax.legend()
     fig.tight_layout(); fig.savefig(out_dir / "three_way_topdown.png", dpi=120); plt.close(fig)
 
