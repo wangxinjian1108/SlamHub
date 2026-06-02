@@ -26,6 +26,10 @@ SAMPLES_DEFAULT = [
     ("ZL11626", Path("output/multi_sample/ZL11626")),
     ("ZL10359", Path("output/multi_sample/ZL10359")),
     ("ZL10966", Path("output/multi_sample/ZL10966")),
+    ("ZL10968", Path("output/multi_sample/ZL10968")),
+    ("ZL11881", Path("output/multi_sample/ZL11881")),
+    ("ZL12332", Path("output/multi_sample/ZL12332")),
+    ("ZL12382", Path("output/multi_sample/ZL12382")),
 ]
 BACKENDS = [
     # Try canonical B2 file first; fall back to plain calibrated_extrinsics.

@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 import yaml
 
-SAMPLES = ["ZL11626", "ZL10359", "ZL10966"]
+SAMPLES = ["ZL11626", "ZL10359", "ZL10966", "ZL10968", "ZL11881", "ZL12332", "ZL12382"]
 BACKENDS = [
     ("FAST-LIO", "ghcr_run_v3"),
     ("KISS-ICP", "kiss_icp_run"),
@@ -42,6 +42,9 @@ def main():
 
     rows = []
     for sample in SAMPLES:
+        sample_dir = Path("output/multi_sample") / sample
+        if not sample_dir.exists():
+            continue
         for sec_short, sec_full in SECONDARIES:
             line = f"{sample:<8} {sec_short:<11} |"
             vals = []
@@ -51,17 +54,10 @@ def main():
                 dt = rec.get("delta_translation_norm_m")
                 vals.append(dt)
                 line += f" {(f'{dt:.3f}m' if dt is not None else '   --   '):>10} |"
-            # Mark the winner per row
             valid = [(i, v) for i, v in enumerate(vals) if v is not None]
-            if valid:
-                best_i = min(valid, key=lambda x: x[1])[0]
-                marker = " " * 22
-                for i, _ in enumerate(BACKENDS):
-                    marker += "    " + ("⭐    " if i == best_i else "      ")
-                # not pretty enough — skip, encode in the row
-
+            best_i = min(valid, key=lambda x: x[1])[0] if valid else None
             print(line)
-            rows.append((sample, sec_short, vals, best_i if valid else None))
+            rows.append((sample, sec_short, vals, best_i))
 
     print("\n=== Wins per backend ===")
     wins = {bname: 0 for bname, _ in BACKENDS}
