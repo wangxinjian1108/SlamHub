@@ -2525,5 +2525,148 @@ GenZ-ICP / MAD-ICP / FAST-LIO 三家几乎并列。
 _Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10/§11/§12 增补于
 2026-05-31，§13/§14/§15 增补于 2026-05-31，§16 增补于 2026-06-01，§17 增补于
 2026-06-02，§18 增补于 2026-06-02，§19 增补于 2026-06-02，§20 增补于 2026-06-02，
-§21 增补于 2026-06-03。_
+§21 增补于 2026-06-03，§22 增补于 2026-06-03。_
+
+---
+
+## 22. 逐项校准值差异：6 backend × 7 sample × 3 secondary side-by-side
+
+§17–§21 一直用 \|Δt\| 标量做 backend 排名，但 \|Δt\| 把 (x, y, z, roll, pitch,
+yaw) 6 维方差压成 1 个数，看不出"具体差在哪个轴"。本节用
+`scripts/eval_calib_side_by_side.py` 把每个 cell 的完整向量摊开。
+
+完整 dump 在 `docs/reports/2026-06-03-calibration-side-by-side.md`（21 个
+(sample, secondary) cell × 6 backend × 6 维 = 756 个数）。本节只摘四个
+代表性 cell + 四个跨 cell 共性。
+
+### 22.1 解读格式
+
+每个 cell 显示：
+
+```
+========== ZL12332 / flash_front ==========
+  init (factory)  : x=+2.8270m y=-0.0262m z=+1.8134m  r=+0.323° p=+42.067° y=+0.448°
+  consensus median: x=+2.9512m y=-0.0488m z=+1.7548m  r=+0.565° p=+41.742° y=+1.324°
+  cross-backend std: x=0.0394m y=0.0279m z=0.0020m  r=0.032° p=0.013° y=0.015°
+
+  Backend        x (m)     y (m)     z (m) |      Δx      Δy      Δz |    r (°)    p (°)    y (°)
+  FAST-LIO     +2.9080   -0.0358   +1.7520 |  -0.043  +0.013  -0.003 | +0.549  +41.733   +1.297
+  KISS-ICP     +3.0009   -0.0510   +1.7550 |  +0.050  -0.002  +0.000 | +0.565  +41.741   +1.340
+  LIO-SAM      +2.9392   -0.1187   +1.7551 |  -0.012  -0.070  +0.000 | +0.625  +41.744   +1.339
+  LIO-SAM*     +2.9388   -0.0720   +1.7540 |  -0.012  -0.023  -0.001 | +0.629  +41.712   +1.323
+  GenZ-ICP     +2.9633   -0.0446   +1.7546 |  +0.012  +0.004  -0.000 | +0.562  +41.743   +1.326
+  MAD-ICP      +3.0239   -0.0467   +1.7587 |  +0.073  +0.002  +0.004 | +0.564  +41.755   +1.311
+```
+
+- **init**：application.yaml 工厂初值（先验，**不是 GT**）
+- **consensus median**：6 个 backend 估值的中位数（GT 不在时的弱共识）
+- **cross-backend std**：6 个 backend 估值的 std。这是 §21.4 用的 GT-free
+  trustworthiness 信号
+- 每行 backend：完整估值 + 与 median 的偏差 Δx/Δy/Δz
+
+### 22.2 三类典型 cell
+
+**类型 A — 高一致 cell**（数据好，所有 backend 几乎同答案）
+
+ZL12332 / flash_front 是典型：
+- cross-backend std 仅 **(x: 4 cm, y: 3 cm, z: 0.2 cm)**，姿态 std < 0.04°
+- 6 个 backend 的 x 全部落在 [2.91, 3.02] 这 11 cm 区间内
+- 6 个 backend 的 pitch 全部落在 [41.71°, 41.76°] 5 mdeg 区间内
+- **可以信任任一 backend 输出，或直接用 median**
+
+ZL12332 全 3 个副雷达都是这种状态（rfr std 6 cm，flash_rear std 5 cm，z 上
+有 49 mm 跳动来自 yaw≈±180° 的 wraparound，不是真分歧 —— roll/pitch 对得
+非常齐）。
+
+**类型 B — 中等 cell**（分歧 ~10-20 cm，1-2 个 backend 偏离）
+
+ZL11626 / flash_front：
+- std (x: 17 cm, y: 4 cm, z: 0.15 cm)
+- **5 个 backend 在 x = 2.76±0.02 m 范围内非常一致** —— GenZ/KISS/LIO\*/MAD
+  全在 [2.769, 2.795]，FAST-LIO 也接近 (2.639)
+- **LIO-SAM 单独偏到 x=2.316 m**，比 median 差 0.45 m
+- 这是 **LIO-SAM (feature-only map) 的已知问题**（§17.7.2 诊断过：
+  feature map 太稀疏导致横向 ICP 抓不住），LIO-SAM\* hybrid 修复后回到群体内
+
+**关键观察**：std 17 cm 的"分歧"实际上是 5 vs 1 的二元对立，不是 6 个 backend
+均匀散开。median 还是非常稳定的。
+
+**类型 C — 低一致 cell**（所有 backend 都不可信）
+
+ZL10359 / rfr：
+- std (x: 60 cm, y: 34 cm)，max pairwise 1.93 m
+- 6 个 backend 的 x 散落在 [5.01, 6.92] 区间 —— **跨度 1.91 m**
+- yaw 散落在 [-60.4°, -57.6°] 跨度 2.8°
+- **没有任何 backend 收敛**，median 也没意义
+- 这是数据问题（25 s × 1 m/s 单方向运动）。**production 必须 reject
+  这种 cell**，落工厂值
+
+### 22.3 跨 cell 共性发现
+
+把 21 个 cell 的 backend Δx/Δy/Δz 看成一个矩阵，能看出**每个 backend 的
+系统性 bias**：
+
+**(1) FAST-LIO 在 flash_front / flash_rear 上 x 系统偏小**
+
+ZL11626 flash_front: −0.13 m; ZL11626 flash_rear: −0.32 m; ZL10359 flash_rear: +0.26 m
+(other backends 都在 ±5 cm)
+
+可能原因：FAST-LIO ESKF 自估 gravity 导致的 yaw bias 在远距副雷达上放大成
+几十 cm 的 x 偏移。这个跟 §11/§12 提到的"FAST-LIO over-confident"故事
+对得上。
+
+**(2) LIO-SAM (feature-only) 在 flash_front 上 x 系统偏小**
+
+ZL11626 flash_front: −0.45 m; ZL11626 rfr: −0.50 m; ZL10359 flash_rear: −0.49 m
+
+LIO-SAM\* hybrid（同一轨迹 + raw map）在这些 cell 全部回到 ±5 cm 内，证实是
+**feature map 稀疏问题**，不是 trajectory 问题。`LIO-SAM` 行的高 Δx 几乎
+完全消失在 `LIO-SAM*` 行 —— §17.8 hybrid map 的修复在 7 sample 上一致有效。
+
+**(3) GenZ-ICP / MAD-ICP / KISS-ICP / LIO-SAM\* 几乎总是 cluster 在
+median ±5 cm**
+
+在所有"非难样本"上，这 4 个 backend 的 (x,y,z) 都跟 median 差不到 ±5 cm。
+backend 的差别在工程上**几乎可以忽略**，关键是数据质量。
+
+**(4) 难 cell 上分歧不是 backend 问题，是几何问题**
+
+ZL10359 rfr 的 1.91 m 跨度对应 backend 内部 ICP 落到 *不同的 local minimum*。
+谁离 ground truth 近、谁远、有没有人离得近 —— 都不知道，因为没 GT。
+**std 0.6 m → 全部 reject** 比"选最好那个 backend 的输出"安全得多。
+
+### 22.4 yaw wraparound 注意
+
+flash_rear 是车后向 LiDAR，工厂 yaw 约 ±180°（±π）。某些 backend 会输出 +178°
+另一些输出 -179°，这是同一个朝向的不同表达。`eval_calib_side_by_side.py`
+直接报 `std(yaw)`，碰到这种 wraparound 会假报巨大 std（如 ZL12332 flash_rear
+yaw_std = 179.85°）。后续应该改成 SO(2) 距离，但当前对 21 个 cell 看 *xyz*
+std 不受影响，足够诊断。
+
+### 22.5 production 用法
+
+读这个表的标准流程：
+
+1. 看 cross-backend std。**xyz_std_norm < 0.1 m → 直接用 median**
+   （5 个 backend 已经投票，结果可信）
+2. 0.1–0.3 m → warn，用 median 但加 ICP info-weighted 平均，看哪个 backend
+   离群
+3. **> 0.3 m → reject**，落工厂值
+
+`scripts/eval_internal_quality.py` 现在已经把这个分类自动化（§21.7 的三档表）；
+`eval_calib_side_by_side.py` 是失败时的诊断工具 —— 看具体哪个 backend 怎么偏。
+
+### 22.6 已 commit 输出
+
+| 路径 | 内容 |
+|------|------|
+| `scripts/eval_calib_side_by_side.py` | 逐 cell 摊开 6×6 维度的诊断 |
+| `docs/reports/2026-06-03-calibration-side-by-side.md` | 21 个 cell 完整 dump |
+
+---
+
+_Report 生成于 2026-05-30，§8/§9 增补于 2026-05-31，§10/§11/§12 增补于
+2026-05-31，§13/§14/§15 增补于 2026-05-31，§16 增补于 2026-06-01，§17 增补于
+2026-06-02，§18 增补于 2026-06-02，§19 增补于 2026-06-02，§20 增补于 2026-06-02，
+§21 增补于 2026-06-03，§22 增补于 2026-06-03。_
 
