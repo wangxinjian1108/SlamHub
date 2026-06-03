@@ -2661,7 +2661,46 @@ std 不受影响，足够诊断。
 | 路径 | 内容 |
 |------|------|
 | `scripts/eval_calib_side_by_side.py` | 逐 cell 摊开 6×6 维度的诊断 |
+| `scripts/viz_calib_scatter.py` | 21 个 cell 的 backend xy 散点图（按 trust band 上色）|
+| `scripts/viz_backend_bias.py` | 每 backend 跨 21 cell 的 Δx/Δy/Δz 分布（大点=outlier 标 cell 名）|
 | `docs/reports/2026-06-03-calibration-side-by-side.md` | 21 个 cell 完整 dump |
+| `output/multi_sample/calib_scatter_grid.png` | 7×3 散点 grid（fixed range，对比 cell 间相对大小）|
+| `output/multi_sample/calib_scatter_grid_zoom.png` | 同上但每 cell 自动缩放（看每 cell 内部分布）|
+| `output/multi_sample/calib_backend_bias.png` | 6 个 backend 的 axis-wise 系统 bias |
+
+### 22.7 可视化解读
+
+**`calib_scatter_grid.png`**：7×3 grid，每格画 6 个 backend 围着 median 散开。
+背景颜色按 trust band：绿=std<10cm（直接信任），橙=10-30cm（warn），
+红=>30cm（reject）。两条同心黑圈是 10cm / 30cm 阈值。一眼能看出：
+
+- ZL12332 整行**全绿**（最 well-conditioned 样本）
+- ZL10359 / ZL12382 大部分**红**（数据不足）
+- ZL11626 / ZL10968 / ZL10966 / ZL11881 多数**橙绿混合**（多数 cell 可信）
+
+**`calib_backend_bias.png`**：3 行（Δx, Δy, Δz）× 6 列（backend），每格箱型图
++ strip plot 显示 21 个 cell 各 axis 偏离中位数的分布。颜色表副雷达。
+偏 0.3 m 以上的 outlier 直接标 cell 名 —— 用来定位每个 backend 的失败模式。
+
+数值汇总（每 backend 的全局 Δaxis 均值 + std）：
+
+| Backend | Δx mean | Δx std | Δy mean | Δy std | Δz mean | Δz std |
+|---------|--------:|-------:|--------:|-------:|--------:|-------:|
+| FAST-LIO | -0.055 | 0.155 | +0.034 | 0.189 | -0.004 | 0.014 |
+| KISS-ICP | +0.034 | 0.162 | +0.029 | 0.191 | +0.008 | 0.017 |
+| LIO-SAM  | **-0.099** | **0.237** | **-0.163** | **0.313** | -0.002 | 0.023 |
+| LIO-SAM\* | +0.084 | 0.264 | -0.029 | 0.108 | -0.001 | 0.015 |
+| **GenZ-ICP** | -0.021 | **0.107** | +0.024 | **0.063** | +0.003 | **0.013** |
+| MAD-ICP  | -0.059 | 0.242 | +0.008 | 0.083 | **-0.000** | **0.011** |
+
+**两个 takeaway**：
+
+1. **GenZ-ICP 跨 21 cell 是离 median 最近的 backend**（Δx std 10.7 cm，
+   Δy std 6.3 cm 都是最低）—— 没有 GT 时它最像"群体共识"。
+2. **LIO-SAM (feature-only) Δy 差 16 cm** + std 31 cm，远大于其他 backend。
+   LIO-SAM\* hybrid 把 Δy std 压到 11 cm —— map quality 是关键。
+3. **所有 backend Δz 都很小**（≤ 2.3 cm std），证明 cross-LiDAR 标定的 z
+   方向在所有数据上都比较 well-conditioned（受地面平面约束强）。
 
 ---
 
