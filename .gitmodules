@@ -1,6 +1,6 @@
 [submodule "thirdparty/FAST_LIO"]
 	path = thirdparty/FAST_LIO
-	url = https://github.com/hku-mars/FAST_LIO.git
+	url = https://github.com/wangxinjian1108/FAST_LIO.git
 [submodule "thirdparty/livox_ros_driver"]
 	path = thirdparty/livox_ros_driver
 	url = https://github.com/Livox-SDK/livox_ros_driver.git
