@@ -31,10 +31,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN mkdir -p /var/run/sshd /root/.ssh && ssh-keygen -A
 RUN pip3 install --no-cache-dir scipy
 
-RUN mkdir -p /catkin_ws/src && \
-    git clone --depth 1 https://github.com/Livox-SDK/livox_ros_driver.git /catkin_ws/src/livox_ros_driver && \
-    git clone --depth 1 https://github.com/hku-mars/FAST_LIO.git /catkin_ws/src/FAST_LIO && \
-    cd /catkin_ws/src/FAST_LIO && git submodule update --init --recursive
+# Bring in upstream source from SlamHub git submodules (no in-image git clone).
+# CI runner does `actions/checkout@v4 with submodules: recursive` which also
+# walks into FAST_LIO/.gitmodules and pulls hku-mars/ikd-Tree on the fast_lio
+# branch (the nested submodule FAST_LIO needs to compile).
+RUN mkdir -p /catkin_ws/src
+COPY thirdparty/livox_ros_driver /catkin_ws/src/livox_ros_driver
+COPY thirdparty/FAST_LIO /catkin_ws/src/FAST_LIO
 
 # SlamHub C1: patch FAST-LIO to dump ESKF pose covariance diagonal in pos_log.txt
 COPY docker/FAST_LIO/patch_dump_cov.py /tmp/patch_dump_cov.py
