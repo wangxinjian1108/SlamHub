@@ -1,0 +1,5 @@
+interface:
+  display_name: "Review"
+  short_description: "Review changes for bugs, regressions, and risk"
+  default_prompt: "Use $review to review these changes and report the highest-risk findings first."
+

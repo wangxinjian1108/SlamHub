@@ -1,0 +1,5 @@
+interface:
+  display_name: "Dockerize Submodule"
+  short_description: "Generate Docker and CI for a model submodule"
+  default_prompt: "Use $dockerize-submodule to create or update the Dockerfile and image workflow for this submodule."
+

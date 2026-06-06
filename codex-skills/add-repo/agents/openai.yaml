@@ -1,0 +1,5 @@
+interface:
+  display_name: "Add Repo"
+  short_description: "Add a SLAM submodule and ship its image pipeline"
+  default_prompt: "Use $add-repo to add a new SLAM/LiDAR-odometry repo, dockerize it (template A for ROS C++, template B for pip-installable Python), update IMAGES.md, and monitor CI."
+

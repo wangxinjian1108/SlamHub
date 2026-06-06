@@ -1,0 +1,4 @@
+interface:
+  display_name: "Run Benchmark"
+  short_description: "Run multi-backend SLAM + cross-LiDAR calibration on AT128P samples"
+  default_prompt: "Use $run-benchmark to run all 6 SLAM backends + B2 cross-LiDAR calibration on a recording, then aggregate per-cell |dt| and cross-backend trustworthiness."

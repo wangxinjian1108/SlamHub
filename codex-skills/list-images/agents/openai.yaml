@@ -1,0 +1,5 @@
+interface:
+  display_name: "List Images"
+  short_description: "Rebuild the image and paper index table"
+  default_prompt: "Use $list-images to regenerate IMAGES.md from workflows, Dockerfiles, and submodule READMEs."
+

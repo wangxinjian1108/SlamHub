@@ -1,0 +1,5 @@
+interface:
+  display_name: "Update Submodule"
+  short_description: "Refresh one submodule and optionally rebuild"
+  default_prompt: "Use $update-submodule to move one tracked model repo to its latest upstream revision and handle any rebuild."
+

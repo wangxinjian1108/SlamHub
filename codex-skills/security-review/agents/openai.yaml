@@ -1,0 +1,5 @@
+interface:
+  display_name: "Security Review"
+  short_description: "Check changes for secrets and security risk"
+  default_prompt: "Use $security-review to inspect these changes for secret leaks, unsafe CI behavior, and container security issues."
+

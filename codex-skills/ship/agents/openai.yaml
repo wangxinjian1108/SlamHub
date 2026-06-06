@@ -1,0 +1,5 @@
+interface:
+  display_name: "Ship"
+  short_description: "Commit, push, open PR, and watch CI"
+  default_prompt: "Use $ship to commit the current repo changes, push them, and monitor the resulting CI runs."
+
