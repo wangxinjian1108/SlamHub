@@ -43,7 +43,12 @@ Optional flags:
    - `<dir>/imu.csv` (for IMU backends)
    - `<dir>/application.yaml` (per-vehicle calibration)
 
-2. Pull GHCR images if missing: `ghcr.io/wangxinjian1108/{fast-lio,lio-sam}:latest`. Pure-Python backends (kiss-icp, genz-icp, mad-icp) install via pip during pipeline.
+2. Pull GHCR images **only if the corresponding backend output is missing**
+   (`output/multi_sample/<sample>/<backend>/calibrated_extrinsics.yaml` absent).
+   When all 6 backends already have cached results, the orchestrator's
+   idempotent skip means no docker invocation is needed — skip the pull
+   entirely. Pure-Python backends (kiss-icp, genz-icp, mad-icp) install
+   via pip during pipeline anyway.
 
 3. Determine output dir: `output/multi_sample/<sample-name>/`.
 

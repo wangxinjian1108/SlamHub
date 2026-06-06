@@ -20,11 +20,20 @@ Optional flags after the recording:
    - `<dir>/application.yaml` (per-vehicle calibration)
    If any is missing, report and stop.
 
-2. **Pre-flight: docker images cached?** — run:
+2. **Pre-flight: docker images cached?** — only needed for backends that
+   will actually run. First check what's already cached on disk:
+   ```
+   ls output/multi_sample/<sample>/<backend>/calibrated_extrinsics.yaml
+   ```
+   If all 6 backends have cached output already, **skip docker pull entirely**
+   — the orchestrator's idempotent skip means we never invoke the FAST-LIO
+   or LIO-SAM containers. Only pull images for backends whose results are
+   missing. To check images:
    ```
    docker images | grep -E "fast-lio|lio-sam|genz-icp|mad-icp"
    ```
-   For any backend image that's not present, pull it:
+   For any backend image that's not present AND its output is also missing,
+   pull it:
    ```
    docker pull ghcr.io/wangxinjian1108/<image>:latest
    ```
