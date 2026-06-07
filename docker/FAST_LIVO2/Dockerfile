@@ -41,14 +41,14 @@ RUN pip3 install --no-cache-dir scipy numpy
 # code. We pin via the SlamHub gitlink so the COPY below carries the exact commit.
 #
 # Patches needed against modern compilers/Eigen:
-#   1. C++11 made std::complex<T>::real() and imag() return rvalues — `x.real() = 0.;`
-#      is a build error. Replace with the new setter form `x.real(0.)`.
-#   2. Same fix for both so2.cpp and the so2 default constructor.
+#   C++11 made std::complex<T>::real() and imag() return rvalues, so
+#   `x.real() = 0.;` is no longer a valid lvalue. Replace with the new
+#   setter form `x.real(0.);`. The pattern `.real() = X;` → `.real(X);`
+#   (and same for imag()) covers all hit sites in so2.cpp.
 COPY thirdparty/Sophus /tmp/Sophus
 RUN cd /tmp/Sophus && \
-    sed -i -E 's|(unit_complex_\.real\(\)) = ([^;]+);|\1.real(\2);|g; s|(unit_complex_\.imag\(\)) = ([^;]+);|\1.imag(\2);|g' sophus/so2.cpp && \
-    sed -i -E 's|(unit_complex_nonconst\(\)\.real\(\)) = ([^;]+);|unit_complex_nonconst().real(\2);|g; s|(unit_complex_nonconst\(\)\.imag\(\)) = ([^;]+);|unit_complex_nonconst().imag(\2);|g' sophus/so2.cpp && \
-    grep -n "real\|imag" sophus/so2.cpp | head -10 && \
+    sed -i -E 's|\.real\(\)[[:space:]]*=[[:space:]]*([^;]+);|.real(\1);|g; s|\.imag\(\)[[:space:]]*=[[:space:]]*([^;]+);|.imag(\1);|g' sophus/so2.cpp && \
+    grep -n -E "\.(real|imag)\(" sophus/so2.cpp && \
     mkdir build && cd build && \
     cmake -DCMAKE_BUILD_TYPE=Release .. && \
     make -j$(nproc) && make install && \
