@@ -56,22 +56,29 @@ RUN cd /tmp/Sophus && \
     ldconfig
 
 # Old Sophus (a621ff2) doesn't install a config file. vikit_common does
-# `FIND_PACKAGE(Sophus REQUIRED)` which defaults to config mode, so we ship
-# a tiny FindSophus.cmake into a system CMAKE_MODULE_PATH location.
-RUN mkdir -p /usr/local/share/cmake/Modules && \
+# `FIND_PACKAGE(Sophus REQUIRED)` which prefers config-mode and only falls
+# back to module-mode under specific conditions. Install BOTH a module-mode
+# FindSophus.cmake AND a config-mode SophusConfig.cmake so any consumer
+# strategy works.
+RUN mkdir -p /usr/local/share/cmake/Modules /usr/local/lib/cmake/Sophus && \
     cat > /usr/local/share/cmake/Modules/FindSophus.cmake <<'CMAKE'
-# Custom FindSophus.cmake for the a621ff2 source-build of Sophus that ships
-# only headers + libSophus.so under /usr/local. vikit_common uses module-mode.
+# Module-mode FindSophus.cmake for source-installed Sophus a621ff2.
 find_path(Sophus_INCLUDE_DIRS sophus/so3.h
-    PATHS /usr/local/include /usr/include
-    NO_DEFAULT_PATH)
-find_path(Sophus_INCLUDE_DIRS sophus/so3.h)
+    HINTS /usr/local/include /usr/include)
 find_library(Sophus_LIBRARIES NAMES Sophus
-    PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
-    NO_DEFAULT_PATH)
-find_library(Sophus_LIBRARIES NAMES Sophus)
+    HINTS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu)
 include(FindPackageHandleStandardArgs)
 find_package_handle_standard_args(Sophus DEFAULT_MSG Sophus_INCLUDE_DIRS Sophus_LIBRARIES)
+CMAKE
+    cat > /usr/local/lib/cmake/Sophus/SophusConfig.cmake <<'CMAKE'
+# Config-mode SophusConfig.cmake for source-installed Sophus a621ff2.
+# Located at the standard /usr/local/lib/cmake/Sophus/ path that
+# find_package(Sophus CONFIG) searches by default.
+get_filename_component(_DIR "${CMAKE_CURRENT_LIST_FILE}" PATH)
+set(Sophus_INCLUDE_DIRS "/usr/local/include")
+set(Sophus_LIBRARIES "/usr/local/lib/libSophus.so")
+set(Sophus_FOUND TRUE)
+mark_as_advanced(Sophus_INCLUDE_DIRS Sophus_LIBRARIES)
 CMAKE
 ENV CMAKE_MODULE_PATH=/usr/local/share/cmake/Modules
 
