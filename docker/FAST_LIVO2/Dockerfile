@@ -55,6 +55,26 @@ RUN cd /tmp/Sophus && \
     rm -rf /tmp/Sophus && \
     ldconfig
 
+# Old Sophus (a621ff2) doesn't install a config file. vikit_common does
+# `FIND_PACKAGE(Sophus REQUIRED)` which defaults to config mode, so we ship
+# a tiny FindSophus.cmake into a system CMAKE_MODULE_PATH location.
+RUN mkdir -p /usr/local/share/cmake/Modules && \
+    cat > /usr/local/share/cmake/Modules/FindSophus.cmake <<'CMAKE'
+# Custom FindSophus.cmake for the a621ff2 source-build of Sophus that ships
+# only headers + libSophus.so under /usr/local. vikit_common uses module-mode.
+find_path(Sophus_INCLUDE_DIRS sophus/so3.h
+    PATHS /usr/local/include /usr/include
+    NO_DEFAULT_PATH)
+find_path(Sophus_INCLUDE_DIRS sophus/so3.h)
+find_library(Sophus_LIBRARIES NAMES Sophus
+    PATHS /usr/local/lib /usr/lib /usr/lib/x86_64-linux-gnu
+    NO_DEFAULT_PATH)
+find_library(Sophus_LIBRARIES NAMES Sophus)
+include(FindPackageHandleStandardArgs)
+find_package_handle_standard_args(Sophus DEFAULT_MSG Sophus_INCLUDE_DIRS Sophus_LIBRARIES)
+CMAKE
+ENV CMAKE_MODULE_PATH=/usr/local/share/cmake/Modules
+
 # Build catkin workspace with FAST-LIVO2 + rpg_vikit + livox_ros_driver, in this order.
 # Reasons we COPY instead of git clone:
 #   - reproducibility: pinned via SlamHub gitlinks
