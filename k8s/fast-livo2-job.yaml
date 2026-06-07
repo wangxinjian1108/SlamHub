@@ -1,0 +1,99 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: fast-livo2-validate
+  labels:
+    app: fast-livo2-validate
+    backend: fast_livo2
+spec:
+  backoffLimit: 0   # don't retry on failure — we want to see the error
+  ttlSecondsAfterFinished: 86400   # auto-cleanup 24h after Job completes
+  template:
+    metadata:
+      labels:
+        app: fast-livo2-validate
+    spec:
+      restartPolicy: Never
+      containers:
+      - name: fast-livo2
+        image: ghcr.io/wangxinjian1108/fast-livo2:latest
+        imagePullPolicy: Always
+        # Run the orchestrator. The container's CMD is /bin/bash, so we
+        # override with the SlamHub runner script (mounted from a configmap
+        # or from a sidecar git-clone init container).
+        command: ["/bin/bash", "-c"]
+        args:
+          - |
+            set -e
+            echo "=== Smoke check: binary exists ==="
+            test -f /catkin_ws/devel/lib/fast_livo/fastlivo_mapping
+            ls -la /catkin_ws/devel/lib/fast_livo/
+            echo ""
+            echo "=== ROS env sanity ==="
+            source /opt/ros/noetic/setup.bash
+            source /catkin_ws/devel/setup.bash
+            rosversion fast_livo
+            echo ""
+            echo "=== Pull SlamHub repo (for runner scripts + config gen) ==="
+            cd /workspace
+            git clone --depth 1 https://github.com/wangxinjian1108/SlamHub.git .
+            ls scripts/run_fastlivo2_in_container.sh
+            echo ""
+            echo "=== Run pipeline ==="
+            export LIDAR=remote_front_left_pointcloud
+            export CAMERA_FRAME=FRAME_CAMERA_TRAFFIC_FRONT
+            bash scripts/run_fastlivo2_in_container.sh
+            echo ""
+            echo "=== Outputs ==="
+            ls -la /output/
+        env:
+        - name: ROS_HOSTNAME
+          value: "localhost"
+        - name: ROS_MASTER_URI
+          value: "http://localhost:11311"
+        # 7 GB heap + 4 cores for FAST-LIVO2 dense map building.
+        # Adjust if the cluster has different node sizes.
+        resources:
+          requests:
+            cpu: "4"
+            memory: "8Gi"
+            ephemeral-storage: "20Gi"
+          limits:
+            cpu: "8"
+            memory: "16Gi"
+            ephemeral-storage: "40Gi"
+        volumeMounts:
+        # The TEEMO sample dir; cluster admins should bind-mount the recording
+        # to /data. If your cluster uses a PVC for TEEMO data, change `hostPath`
+        # to `persistentVolumeClaim`.
+        - name: data
+          mountPath: /data
+          readOnly: true
+        - name: workspace
+          mountPath: /workspace
+        - name: output
+          mountPath: /output
+        # FAST-LIVO2 writes large PCDs; give /tmp 4 GB tmpfs
+        - name: tmp
+          mountPath: /tmp
+      volumes:
+      - name: data
+        # CHANGE: replace with your cluster's TEEMO data mount path or PVC.
+        # Example: PVC mounted from a NFS share holding the AT128P fixtures.
+        hostPath:
+          path: /mnt/teemo-data/ZL11626_40482_zelos_sample_2025-07-02_14-29-00_000000000_8993544
+          type: Directory
+      - name: workspace
+        emptyDir: {}
+      - name: output
+        # CHANGE: ideally a PVC so trajectories survive Job deletion
+        emptyDir:
+          sizeLimit: 40Gi
+      - name: tmp
+        emptyDir:
+          medium: Memory
+          sizeLimit: 4Gi
+      # If the cluster doesn't have a public-image-pull-secret default,
+      # add image pull credentials for ghcr.io:
+      # imagePullSecrets:
+      # - name: ghcr-pull-secret
