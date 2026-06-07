@@ -39,9 +39,16 @@ RUN pip3 install --no-cache-dir scipy numpy
 # Build Sophus from source. FAST-LIVO2 README pins commit a621ff (== a621ff2),
 # the non-templated/double-only version. Newer Sophus templated API breaks the
 # code. We pin via the SlamHub gitlink so the COPY below carries the exact commit.
+#
+# Patches needed against modern compilers/Eigen:
+#   1. C++11 made std::complex<T>::real() and imag() return rvalues — `x.real() = 0.;`
+#      is a build error. Replace with the new setter form `x.real(0.)`.
+#   2. Same fix for both so2.cpp and the so2 default constructor.
 COPY thirdparty/Sophus /tmp/Sophus
 RUN cd /tmp/Sophus && \
-    sed -i 's|unit_complex_.real() = 1\.;|unit_complex_.real(1.);|' sophus/so2.cpp 2>/dev/null || true && \
+    sed -i -E 's|(unit_complex_\.real\(\)) = ([^;]+);|\1.real(\2);|g; s|(unit_complex_\.imag\(\)) = ([^;]+);|\1.imag(\2);|g' sophus/so2.cpp && \
+    sed -i -E 's|(unit_complex_nonconst\(\)\.real\(\)) = ([^;]+);|unit_complex_nonconst().real(\2);|g; s|(unit_complex_nonconst\(\)\.imag\(\)) = ([^;]+);|unit_complex_nonconst().imag(\2);|g' sophus/so2.cpp && \
+    grep -n "real\|imag" sophus/so2.cpp | head -10 && \
     mkdir build && cd build && \
     cmake -DCMAKE_BUILD_TYPE=Release .. && \
     make -j$(nproc) && make install && \
