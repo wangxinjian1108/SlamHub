@@ -13,3 +13,13 @@
 [submodule "thirdparty/mad-icp"]
 	path = thirdparty/mad-icp
 	url = https://github.com/wangxinjian1108/mad-icp.git
+
+[submodule "thirdparty/FAST-LIVO2"]
+	path = thirdparty/FAST-LIVO2
+	url = https://github.com/wangxinjian1108/FAST-LIVO2.git
+[submodule "thirdparty/rpg_vikit"]
+	path = thirdparty/rpg_vikit
+	url = https://github.com/xuankuzcr/rpg_vikit.git
+[submodule "thirdparty/Sophus"]
+	path = thirdparty/Sophus
+	url = https://github.com/strasdat/Sophus.git
