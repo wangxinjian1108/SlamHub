@@ -1,20 +1,21 @@
 #!/bin/bash
-# Run all 6 SLAM backends + B2 cross-LiDAR calibration on one recording.
+# Run all 7 SLAM backends + B2 cross-LiDAR calibration on one recording.
 #
 # Usage: run_all_backends.sh <recording-dir> <output-root>
 #
 # Produces:
 #   <output-root>/{ghcr_run_v3,kiss_icp_run,liosam_run,liosam_run_hybrid,
-#                  genz_icp_run,mad_icp_run}/
+#                  genz_icp_run,mad_icp_run,fastlivo2_run}/
 #       trajectory.txt, scans*.pcd, registration/, calibrated_extrinsics.yaml
 #
-# The 6 backends:
+# The 7 backends:
 #   1. FAST-LIO2  — IMU + LiDAR, ESKF, GHCR docker image
 #   2. KISS-ICP   — pure-LiDAR voxel ICP, native pip
 #   3. LIO-SAM    — IMU + LiDAR, factor graph + loop closure, GHCR docker image
 #   4. LIO-SAM*   — LIO-SAM trajectory + raw-PCD restitched map (hybrid)
 #   5. GenZ-ICP   — pure-LiDAR adaptive-weighted voxel ICP, native pip
 #   6. MAD-ICP    — pure-LiDAR matching-data odometry, native pip
+#   7. FAST-LIVO2 — IMU + LiDAR + camera VIO, ESKF + direct method, GHCR docker image
 #
 # Skips a backend if its output dir already exists & has trajectory.txt.
 
@@ -168,6 +169,38 @@ elif [ -f "$LS_DIR/trajectory_lidar.txt" ] && [ -d "$CLEAN" ]; then
         --output-dir "$LSH_DIR"
 fi
 
+# === 7. FAST-LIVO2 (IMU + LiDAR + camera VIO; GHCR docker image) ===
+# Note: we don't auto-pull the FAST-LIVO2 image during local benchmarking.
+# Local docker pull of the 5 GB image is intractable over slow proxies; the
+# canonical validation path is the K8s Job (see k8s/fast-livo2-job.yaml).
+# This block runs only when the image is already pulled OR when the user
+# pre-populated <out>/fastlivo2_run/trajectory_lidar.txt + scans.pcd
+# (e.g. by `kubectl cp` from a successful cluster Job). The skip-on-resume
+# logic ensures cluster-only users aren't blocked by a missing local image.
+LIVO2_DIR="$OUT/fastlivo2_run"
+CAMERA_FRAME="${CAMERA_FRAME:-FRAME_CAMERA_TRAFFIC_FRONT}"
+if have_traj "$LIVO2_DIR"; then
+    echo "--- skip FAST-LIVO2 (already done)"
+elif docker image inspect ghcr.io/wangxinjian1108/fast-livo2:latest >/dev/null 2>&1; then
+    mkdir -p "$LIVO2_DIR"
+    docker run --rm \
+        -v "$REC":/data:ro \
+        -v "$(cd "$SCRIPT_DIR/.." && pwd)":/workspace:ro \
+        -v "$LIVO2_DIR":/output \
+        -e LIDAR="$LIDAR" \
+        -e CAMERA_FRAME="$CAMERA_FRAME" \
+        ghcr.io/wangxinjian1108/fast-livo2:latest \
+        /bin/bash /workspace/scripts/run_fastlivo2_in_container.sh || true
+    # Post-process: T_world_lidar (TUM) → T_world_imu + voxel-downsample dense map
+    if [ -f "$LIVO2_DIR/trajectory_lidar.txt" ]; then
+        python3 "$SCRIPT_DIR/prep_fastlivo2_for_b2.py" \
+            --livo2-dir "$LIVO2_DIR" --recording "$REC" \
+            --primary-lidar "$LIDAR" || true
+    fi
+else
+    echo "--- skip FAST-LIVO2 (image not pulled; use k8s/fast-livo2-job.yaml on the cluster)"
+fi
+
 # === B2 cross-LiDAR registration + aggregation, for each backend that has a map ===
 SECONDARIES=(flash_front_pointcloud flash_rear_pointcloud remote_front_right_pointcloud)
 
@@ -207,7 +240,7 @@ echo ""
 echo "=============================================="
 echo " B2 cross-LiDAR registration + aggregation"
 echo "=============================================="
-for bdir in "$KISS_DIR" "$FL_DIR" "$GENZ_DIR" "$MAD_DIR" "$LS_DIR" "$LSH_DIR"; do
+for bdir in "$KISS_DIR" "$FL_DIR" "$GENZ_DIR" "$MAD_DIR" "$LS_DIR" "$LSH_DIR" "$LIVO2_DIR"; do
     run_b2_for "$bdir"
 done
 

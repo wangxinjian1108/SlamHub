@@ -102,12 +102,26 @@ def main():
     # Find actual image dimensions from disk
     img_dir = args.recording / CAM_DIR_MAP[args.camera_frame]
     sample = next(img_dir.glob("*.png"), None) if img_dir.exists() else None
+    cam_width, cam_height = 1920, 1080  # fallback
     if sample is not None:
-        from PIL import Image
-        im = Image.open(sample)
-        cam_width, cam_height = im.width, im.height
-    else:
-        cam_width, cam_height = 1920, 1080  # fallback
+        try:
+            from PIL import Image
+            im = Image.open(sample)
+            cam_width, cam_height = im.width, im.height
+        except ImportError:
+            try:
+                import cv2
+                im = cv2.imread(str(sample), cv2.IMREAD_COLOR)
+                if im is not None:
+                    cam_height, cam_width = im.shape[:2]
+            except Exception:
+                # Final fallback: parse PNG IHDR (16 bytes after PNG signature)
+                # This works without any image lib.
+                with open(sample, "rb") as f:
+                    data = f.read(24)
+                if data[:8] == b"\x89PNG\r\n\x1a\n":
+                    import struct
+                    cam_width, cam_height = struct.unpack(">II", data[16:24])
 
     # ----- Camera extrinsic (T_lidar_camera) -----
     # TEEMO gives T_baselink_camera and T_baselink_lidar.

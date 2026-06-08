@@ -16,6 +16,7 @@ BACKENDS = [
     ("LIO-SAM*", "liosam_run_hybrid"),
     ("GenZ-ICP", "genz_icp_run"),
     ("MAD-ICP",  "mad_icp_run"),
+    ("LIVO2",    "fastlivo2_run"),
 ]
 SECONDARIES = [("flash_front", "flash_front_pointcloud"),
                ("flash_rear",  "flash_rear_pointcloud"),

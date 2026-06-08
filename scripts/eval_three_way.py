@@ -55,6 +55,7 @@ def main():
         "LIO-SAM":  Path("output/liosam_run/trajectory.txt"),
         "GenZ-ICP": Path("output/genz_icp_run/trajectory.txt"),
         "MAD-ICP":  Path("output/mad_icp_run/trajectory.txt"),
+        "LIVO2":    Path("output/fastlivo2_run/trajectory.txt"),
     }
     raw = {name: load_tum(p) for name, p in inputs.items()}
 
@@ -69,7 +70,7 @@ def main():
     fl_t, fl_xyz = raw["FAST-LIO"]
     aligned = {"FAST-LIO": fl_xyz}
     metrics = {}
-    for name in ("KISS-ICP", "LIO-SAM", "GenZ-ICP", "MAD-ICP"):
+    for name in ("KISS-ICP", "LIO-SAM", "GenZ-ICP", "MAD-ICP", "LIVO2"):
         if name not in raw:
             continue
         t_e, xyz_e = raw[name]
@@ -105,13 +106,13 @@ def main():
     # --- Plots ---
     colors = {"FAST-LIO": "tab:blue", "KISS-ICP": "tab:green",
               "LIO-SAM": "tab:red",  "GenZ-ICP": "tab:purple",
-              "MAD-ICP": "tab:orange"}
+              "MAD-ICP": "tab:orange", "LIVO2": "tab:brown"}
     # matplotlib's plot() rejects tuple dash specs in the fmt string slot,
     # so keep all styles as named strings — uniqueness is good enough for
     # 5 lines.
     styles = {"FAST-LIO": "-", "KISS-ICP": "-.",
               "LIO-SAM":  "--", "GenZ-ICP": ":",
-              "MAD-ICP":  "-"}
+              "MAD-ICP":  "-",  "LIVO2":   "-."}
 
     fig, ax = plt.subplots(figsize=(11, 8))
     for name, xyz in aligned.items():

@@ -27,6 +27,7 @@ Optional flags:
   4. MAD-ICP — native pip, matching-data voxel ICP
   5. LIO-SAM — GHCR docker (`ghcr.io/wangxinjian1108/lio-sam:latest`), factor graph + IMU + loop closure
   6. LIO-SAM\* hybrid — LIO-SAM trajectory + raw-PCD restitched map (in-script post-processing, no separate image)
+  7. FAST-LIVO2 — GHCR docker (`ghcr.io/wangxinjian1108/fast-livo2:latest`), LiDAR + IMU + camera VIO. Skipped automatically when image not pulled locally; cluster validation via `k8s/fast-livo2-job.yaml`.
 
 ## Guardrails
 

@@ -1,13 +1,13 @@
 Run the multi-backend SLAM + cross-LiDAR calibration benchmark on one recording.
 
 ## Argument
-`$ARGUMENTS` is one of:
+$ARGUMENTS is one of:
 - A recording directory path (e.g. `/root/code/LargeCalibService/node_data/fixtures/lio/ZL11626_*`)
 - A short sample name (e.g. `ZL11626`, `ZL10359`) — looked up under the default fixture root
 - `all` — run all 7 known samples sequentially (long: 4-6 hours total)
 
 Optional flags after the recording:
-- `--backends a,b,c` — subset of backends to run (default: all 6)
+- `--backends a,b,c` — subset of backends to run (default: all 7)
 - `--skip-existing` — skip backends that already have `output/multi_sample/<sample>/<backend>/calibrated_extrinsics.yaml`
 
 ## Steps
@@ -52,6 +52,10 @@ Optional flags after the recording:
    4. MAD-ICP (native pip, reuses cleaned_pcds)
    5. LIO-SAM (GHCR docker, per-recording config via `gen_liosam_config.py`)
    6. LIO-SAM\* hybrid (LIO-SAM trajectory + raw-PCD restitched map)
+   7. FAST-LIVO2 (GHCR docker, LIDAR + IMU + camera VIO, per-recording config via `gen_fastlivo2_config.py`).
+      Skipped automatically if the local image isn't pulled — use `k8s/fast-livo2-job.yaml` on a cluster
+      with fast network instead, then `kubectl cp` the result into `output/multi_sample/<sample>/fastlivo2_run/`
+      so the next orchestrator run picks it up via the idempotent skip path.
    Then for each backend's voxel-0.3 map: B2 cross-LiDAR registration (3 secondaries × icp_pl frame mode) + axis-info-weighted aggregation.
 
 5. **Watch progress** — the orchestrator prints `=== <step> ===` headers. Use Monitor on `tail -F` of the log to surface key events: backend completion, B2 registration completion, errors. Each long-recording sample (60s) takes ~50-90 min; short (~25s) takes ~25-45 min.

@@ -81,17 +81,36 @@ sleep 3
 
 echo ""
 echo "=== Step 9: Collect outputs ==="
+# FAST-LIVO2 with our config (`pcd_save_en: true`) writes the dense map to
+# /catkin_ws/src/FAST-LIVO2/Log/pcd/all_raw_points.pcd
+#  + an already-downsampled all_downsampled_points.pcd (way too sparse for B2)
+# We use all_raw_points.pcd as scans.pcd and let prep_fastlivo2_for_b2.py
+# downsample it to 0.3 m for the cross-LiDAR ICP target.
+PCD_LOG_DIR=/catkin_ws/src/FAST-LIVO2/Log/pcd
+if [ -f "$PCD_LOG_DIR/all_raw_points.pcd" ]; then
+    cp -v "$PCD_LOG_DIR/all_raw_points.pcd" /output/scans.pcd
+fi
+# Older FAST-LIO style PCD path, kept as fallback
 PCD_DIR=/catkin_ws/src/FAST-LIVO2/PCD
-ls -la "$PCD_DIR"/ 2>/dev/null || echo "No PCD dir"
-cp -v "$PCD_DIR"/*.pcd /output/ 2>/dev/null || echo "No PCD files saved"
-# Trajectory dumps
-for src in /catkin_ws/src/FAST-LIVO2/Log/pos_log.txt \
-           /catkin_ws/src/FAST-LIVO2/Log/traj.txt \
-           ~/.ros/pos_log.txt; do
-    [ -f "$src" ] && cp -v "$src" /output/
-done
-# Wide dragnet for any *.txt trajectory output
-find / -name "*pos_log*" -newer /output 2>/dev/null -exec cp -v {} /output/ \; 2>/dev/null || true
+[ -d "$PCD_DIR" ] && cp -v "$PCD_DIR"/*.pcd /output/ 2>/dev/null || true
+
+# FAST-LIVO2 with `evo.pose_output_en: true` + `seq_name: TEEMO_AT128P` writes
+# TUM-format trajectory at Log/result/TEEMO_AT128P.txt
+# (time x y z qx qy qz qw, T_world_lidar). Copy as the canonical
+# trajectory_lidar.txt for downstream B2 processing.
+RESULT_DIR=/catkin_ws/src/FAST-LIVO2/Log/result
+if [ -f "$RESULT_DIR/TEEMO_AT128P.txt" ]; then
+    cp -v "$RESULT_DIR/TEEMO_AT128P.txt" /output/trajectory_lidar.txt
+    echo "  trajectory_lidar.txt: $(wc -l < /output/trajectory_lidar.txt) poses"
+fi
+
+# Per-frame lidar_poses.txt (used internally) — also useful for debugging.
+[ -f "$PCD_LOG_DIR/lidar_poses.txt" ] && cp -v "$PCD_LOG_DIR/lidar_poses.txt" /output/
+
+# Save full Log/ tree for debugging (mat_pre / mat_out / image_poses etc.)
+mkdir -p /output/Log
+cp -r /catkin_ws/src/FAST-LIVO2/Log/. /output/Log/ 2>/dev/null || true
+
 ls -la /output/
 
 echo ""

@@ -18,6 +18,7 @@ def main():
         "LIO-SAM*":  Path("output/liosam_run_hybrid/calibrated_extrinsics.yaml"),
         "GenZ-ICP":  Path("output/genz_icp_run/calibrated_extrinsics.yaml"),
         "MAD-ICP":   Path("output/mad_icp_run/calibrated_extrinsics.yaml"),
+        "LIVO2":     Path("output/fastlivo2_run/calibrated_extrinsics.yaml"),
     }
     calibs = {name: load_calib(p) for name, p in inputs.items()}
 

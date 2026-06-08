@@ -39,6 +39,7 @@ BACKENDS = [
     ("LIO-SAM*", "liosam_run_hybrid", ["calibrated_extrinsics.yaml"]),
     ("GenZ-ICP", "genz_icp_run", ["calibrated_extrinsics.yaml"]),
     ("MAD-ICP",  "mad_icp_run",  ["calibrated_extrinsics.yaml"]),
+    ("LIVO2",    "fastlivo2_run", ["calibrated_extrinsics.yaml"]),
 ]
 SECONDARIES = ["flash_front_pointcloud", "flash_rear_pointcloud", "remote_front_right_pointcloud"]
 
