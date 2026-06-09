@@ -21,9 +21,19 @@ BAG=/output/${LIDAR}_livo.bag
 mkdir -p /output
 
 echo "=== Step 1: Convert PCD+IMU+images → ROS bag ==="
+# Validate cached bag with `rosbag info` — a partial/unindexed file from an
+# interrupted previous run will silently break Step 6 (rosbag play) otherwise.
+need_convert=1
 if [ -f "$BAG" ]; then
-    echo "Bag $BAG already exists — skipping conversion."
-else
+    if rosbag info "$BAG" >/dev/null 2>&1; then
+        echo "Bag $BAG already exists (valid) — skipping conversion."
+        need_convert=0
+    else
+        echo "Bag $BAG exists but is corrupt/unindexed — regenerating."
+        rm -f "$BAG"
+    fi
+fi
+if [ "$need_convert" = "1" ]; then
     python3 /workspace/scripts/convert_to_rosbag_livo.py "$RECORDING" \
         --lidar "$LIDAR" --camera-frame "$CAMERA_FRAME" -o "$BAG" \
         --scan-line 128 --vfov-min -13 --vfov-max 14
